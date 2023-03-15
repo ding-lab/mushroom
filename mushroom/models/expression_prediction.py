@@ -1,3 +1,5 @@
+import re
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -70,8 +72,10 @@ class STExpressionModel(nn.Module):
                                         kernel_size=1)
 
         # latent mu and var
-        self.latent_mu = nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=1)
-        self.latent_var = nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=1)
+        self.latent_mu = nn.Conv2d(in_channels=out_channels, out_channels=out_channels,
+                                   kernel_size=1)
+        self.latent_var = nn.Conv2d(in_channels=out_channels, out_channels=out_channels,
+                                    kernel_size=1)
         self.latent_norm = nn.BatchNorm2d(out_channels) # try changing momentum
         
         self.n_metagenes = n_metagenes
@@ -134,7 +138,8 @@ class STExpressionModel(nn.Module):
             'he_loss': he_loss
         }
 
-    def reconstruct_expression(self, dec, masks=None, voxel_idxs=None, reduce_to_voxel=True, gene_idxs=None):
+    def reconstruct_expression(self, dec, masks=None, voxel_idxs=None, reduce_to_voxel=True,
+                               gene_idxs=None):
         x = self.post_decode_exp(dec) # (b c h w)
         
         if reduce_to_voxel:
@@ -185,8 +190,9 @@ class STExpressionModel(nn.Module):
 
         he = self.reconstruct_he(z)
         
-        exp_result = self.reconstruct_expression(z, masks=masks, voxel_idxs=voxel_idxs,
-                                                 reduce_to_voxel=reduce_to_voxel, gene_idxs=gene_idxs)
+        exp_result = self.reconstruct_expression(
+            z, masks=masks, voxel_idxs=voxel_idxs, reduce_to_voxel=reduce_to_voxel,
+            gene_idxs=gene_idxs)
         
         result = {
             'z': z,
@@ -200,16 +206,48 @@ class STExpressionModel(nn.Module):
 
 
 class STExpressionLightning(pl.LightningModule):
-    def __init__(self, model, lr=1e-4):
+    def __init__(self, model, config):
         super().__init__()
         
         self.model = model
-        self.lr = lr
+        self.lr = config['training']['lr']
+        self.config = config # saving config so we can load from checkpoint
+
+        self.set_prediction_genes(config['genes'])
         
-        # self.save_hyperparameters(ignore=['autokl'])
+        self.save_hyperparameters(ignore=['model'])
+
+    @staticmethod
+    def load_from_checkpoint(checkpoint_path):
+        """Need to overwrite default method due to model pickling issue"""
+        checkpoint = torch.load(checkpoint_path)
+        config = checkpoint['hyper_parameters']['config']
+        m = STExpressionModel(
+            config['genes'],
+            n_metagenes=config['n_metagenes'],
+            he_scaler=config['he_scaler'],
+            kl_scaler=config['kl_scaler'],
+            exp_scaler=config['exp_scaler'],
+        )
+        d = {re.sub(r'^model.(.*)$', r'\1', k):v for k, v in checkpoint['state_dict'].items()}
+        m.load_state_dict(d)
+
+        return STExpressionLightning(m, config)
+
+    def set_prediction_genes(self, genes):
+        a = set(genes)
+        b = set(self.model.genes)
+        missing = a - b
+        if len(missing) != 0:
+            raise RuntimeError(f'The following genes were not in the training dataset and cannot be predicted by the model: {missing}')
+
+        gene_idxs = [self.model.genes.index(g) for g in genes]
+        self.prediction_genes = genes
+        self.prediction_gene_idxs = gene_idxs
 
     def training_step(self, batch, batch_idx):
-        x, x_context, masks, voxel_idxs, exp = batch['he'], batch['context_he'], batch['masks'], batch['voxel_idxs'], batch['exp']
+        x, x_context, masks, voxel_idxs, exp = (
+            batch['he'], batch['context_he'], batch['masks'], batch['voxel_idxs'], batch['exp'])
         result = self.model(x, x_context, masks=masks, voxel_idxs=voxel_idxs)
         losses = self.model.calculate_loss(x, exp, result)
         losses = {f'train/{k}':v for k, v in losses.items()}
@@ -220,7 +258,8 @@ class STExpressionLightning(pl.LightningModule):
         return losses
     
     def validation_step(self, batch, batch_idx):
-        x, x_context, masks, voxel_idxs, exp = batch['he'], batch['context_he'], batch['masks'], batch['voxel_idxs'], batch['exp']
+        x, x_context, masks, voxel_idxs, exp = (
+            batch['he'], batch['context_he'], batch['masks'], batch['voxel_idxs'], batch['exp'])
         result = self.model(x, x_context, masks=masks, voxel_idxs=voxel_idxs)
         losses = self.model.calculate_loss(x, exp, result)
         losses = {f'val/{k}':v for k, v in losses.items()}
@@ -232,3 +271,11 @@ class STExpressionLightning(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
+    
+    def forward(self, batch):
+        x, x_context = batch['he'], batch['context_he']
+        result = self.model(
+            x, x_context,
+            reduce_to_voxel=False, use_means=True, gene_idxs=self.prediction_gene_idxs)
+        
+        return result

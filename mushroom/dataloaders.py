@@ -105,9 +105,6 @@ class STDataset(Dataset):
         voxel_idxs = voxel_idxs[voxel_idxs!=0]
         n_voxels = len(voxel_idxs)
         masks, voxel_idxs = create_masks(labeled_img, voxel_idxs, self.max_voxel_area, thresh=.25)
-        # print(masks.shape, n_voxels)
-        # print(voxel_idxs)
-
 
         if voxel_idxs is None:
             voxel_idxs = torch.tensor([0], dtype=torch.long)
@@ -201,3 +198,112 @@ class MultisampleSTDataset(Dataset):
         d = self.ds_dict[k][i]
 
         return d
+    
+
+class HEPredictionDataset(Dataset):
+    """Tiled H&E dataset"""
+    def __init__(self, he, size=256, context_res=2., transform=OverlaidHETransform(),
+                 scale=.5, overlap_pct=.5):
+        self.scale = scale
+        self.size = size
+        self.overlap_pct = overlap_pct
+        self.step_size = int(size * overlap_pct)
+        self.tile_width = int(size * context_res)
+        self.transform = transform
+
+        he = rearrange(torch.tensor(he, dtype=torch.float32), 'h w c -> c h w')
+        self.full_res_he_shape = he.shape
+        he -= he.min()
+        he /= he.max()
+        he = TF.resize(he, (int(he.shape[-2] * scale), int(he.shape[-1] * scale)))
+        self.scaled_he_shape = he.shape
+        he = self.transform(he)
+        he = TF.pad(he, self.tile_width, padding_mode='reflect')
+        self.he = he
+
+        n_steps_width = (self.he.shape[-1] - self.tile_width) // self.step_size
+        n_steps_height = (self.he.shape[-2] - self.tile_width) // self.step_size # assuming square tile
+        self.coord_to_tile = {}
+        self.coords = []
+        self.absolute_coords = []
+        for i in range(n_steps_height):
+            for j in range(n_steps_width):
+                r, c = i * self.step_size, j * self.step_size
+                tile = TF.crop(self.he, r, c, self.tile_width, self.tile_width)
+                self.coord_to_tile[(i, j)] = tile
+                self.coords.append((i, j))
+                self.absolute_coords.append((r, c))
+
+    def __len__(self):
+        return len(self.coords)
+
+    def __getitem__(self, idx):
+        i, j = self.coords[idx]
+        r, c = self.absolute_coords[idx]
+        context_he = self.coord_to_tile[(i, j)]
+        he = TF.center_crop(context_he, (self.size, self.size))
+        context_he = TF.resize(context_he, (self.size, self.size))
+
+        return {
+            'coord': torch.tensor([i, j], dtype=torch.long),
+            'absolute': torch.tensor([r, c], dtype=torch.long),
+            'he': he,
+            'context_he': context_he,
+        }
+    
+    def retile(self, coord_to_tile, trim_to_original=True, scale_to_original=True):
+        tile = next(iter(coord_to_tile.values()))
+        max_i = max([i for i, _ in coord_to_tile.keys()])
+        max_j = max([j for _, j in coord_to_tile.keys()])
+        new = None
+        for i in range(max_i):
+            row = None
+            for j in range(max_j):
+                tile = coord_to_tile[i, j]
+                tile = TF.center_crop(
+                    tile, (int(self.size * self.overlap_pct), int(self.size * self.overlap_pct)))
+                if row is None:
+                    row = tile
+                else:
+                    row = torch.concat((row, tile), dim=-1)
+            if new is None:
+                new = row
+            else:
+                new = torch.concat((new, row), dim=-2)
+        if trim_to_original:
+            new = new[..., self.size:self.size + self.scaled_he_shape[-2], self.size:self.size + self.scaled_he_shape[-1]]
+        if scale_to_original:
+            new = TF.resize(new, (self.full_res_he_shape[-2], self.full_res_he_shape[-1]))
+
+        return new
+
+
+    def sanity_check(self):
+        print(f'num tiles: {len(self.coords)}, step size: {self.step_size}, tile width: {self.tile_width}')
+
+        d = self[0]
+        print(f'keys: {d.keys()}')
+
+        img = rearrange(d['he'].clone().detach().cpu().numpy(), 'c h w -> h w c')
+        img -= img.min()
+        img /= img.max()
+        plt.imshow(img)
+        plt.title('H&E')
+        plt.show()
+
+        img = rearrange(d['context_he'].clone().detach().cpu().numpy(), 'c h w -> h w c')
+        img -= img.min()
+        img /= img.max()
+        plt.imshow(img)
+        plt.title('context H&E')
+        plt.show()
+
+        img = rearrange(self.retile(self.coord_to_tile), 'c h w -> h w c')
+        img -= img.min()
+        img /= img.max()
+        plt.imshow(img)
+        plt.title('retiled to full res H&E')
+        plt.show()
+
+        print(f'original H&E shape: {self.full_res_he_shape}')
+        print(f'retiled H&E shape: {img.shape}')

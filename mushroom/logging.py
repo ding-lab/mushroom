@@ -6,7 +6,7 @@ from einops import rearrange
 from mushroom.utils import construct_tile_expression
 
 
-class LoggingCallback(pl.Callback):
+class STExpressionLoggingCallback(pl.Callback):
     def __init__(self, log_every=10, log_n_samples=8, plot_genes=['IL7R', 'EPCAM', 'SPARC']):
         self.log_every = log_every
         self.log_n_samples = log_n_samples
@@ -35,7 +35,6 @@ class LoggingCallback(pl.Callback):
             img = img.sum(1) > 0
             new = torch.zeros_like(img, dtype=torch.float32)
             new[img] = 1.
-            print(new.shape)
             trainer.logger.log_image(
                 key=f"{key}/voxels",
                 images=[i for i in new],
