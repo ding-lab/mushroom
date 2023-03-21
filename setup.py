@@ -41,7 +41,8 @@ setup(
         'pytorch-lightning',
         'timm',
         'einops',
-        'wandb'
+        'wandb',
+        'kornia'
     ],
     include_package_data=True,
 

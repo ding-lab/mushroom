@@ -7,7 +7,7 @@ from mushroom.utils import construct_tile_expression
 
 
 class STExpressionLoggingCallback(pl.Callback):
-    def __init__(self, log_every=10, log_n_samples=8, plot_genes=['IL7R', 'EPCAM', 'SPARC']):
+    def __init__(self, log_every=10, log_n_samples=8, plot_genes=['EPCAM']):
         self.log_every = log_every
         self.log_n_samples = log_n_samples
         self.plot_genes = plot_genes

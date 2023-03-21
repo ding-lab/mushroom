@@ -1,7 +1,25 @@
+import os
+import re
+
+import numpy as np
+import seaborn as sns
 import torch
 import torchvision.transforms.functional as TF
 import numpy as np
 from einops import rearrange
+from skimage.exposure import rescale_intensity
+from tifffile import TiffFile
+from ome_types import from_tiff, from_xml
+
+
+def listfiles(folder, regex=None):
+    """Return all files with the given regex in the given folder structure"""
+    for root, folders, files in os.walk(folder):
+        for filename in folders + files:
+            if regex is None:
+                yield os.path.join(root, filename)
+            elif re.findall(regex, os.path.join(root, filename)):
+                yield os.path.join(root, filename)
 
 
 def create_circular_mask(h, w, center=None, radius=None):
@@ -32,13 +50,22 @@ def get_means_and_stds(adatas):
     return means, stds
 
 
+def extract_he_from_adata(adata):
+    """Extract hires H&E from adata object"""
+    return next(iter(adata.uns['spatial'].values()))['images']['hires']
+
+
 def rescale_img(img, scale=.5, shape=None):
     if shape is None:
         h, w = int(img.shape[0] * scale), int(img.shape[1] * scale)
     else:
         h, w = shape
     scaled = TF.resize(rearrange(torch.Tensor(img), 'h w c -> c h w'), size=(h, w))
-    return rearrange(scaled, 'c h w -> h w c').numpy().astype(np.uint8)
+    scaled = rearrange(scaled, 'c h w -> h w c').numpy()
+    
+    if scaled.max() > 1.:
+        return scaled.astype(np.uint8)
+    return scaled
 
 
 def rescale_with_pad(img, scale=.5, shape=None, padding_mode='reflect'):
@@ -78,3 +105,58 @@ def construct_tile_expression(padded_exp, masks, n_voxels, normalize=True):
     tile /= np.expand_dims(tile.max(axis=(0, -2, -1)), (0, -2, -1))
 
     return rearrange(tile, 'b c h w -> b h w c')
+
+
+def extract_ome_tiff(fp, channels=None):   
+    tif = TiffFile(fp)
+    ome = from_xml(tif.ome_metadata)
+    im = ome.images[0]
+    d = {}
+    img_channels = []
+    for c, p in zip(im.pixels.channels, tif.pages):
+        img_channels.append(c.name)
+
+        if channels is None:
+            img = p.asarray()
+            d[c.name] = img
+        elif c.name in channels:
+            img = p.asarray()
+            d[c.name] = img
+
+    if channels is not None and len(set(channels).intersection(set(img_channels))) != len(channels):
+        raise RuntimeError(f'Not all channels were found in ome tiff: {channels} | {img_channels}')
+
+    return d
+
+
+def get_ome_tiff_channels(fp):   
+    tif = TiffFile(fp)
+    ome = from_xml(tif.ome_metadata)
+    im = ome.images[0]
+    return [c.name for c in im.pixels.channels]
+
+
+def make_pseudo(channel_to_img, cmap=None, contrast_pct=20.):
+    cmap = sns.color_palette('tab10') if cmap is None else cmap
+
+    new = np.zeros_like(next(iter(channel_to_img.values())))
+    img_stack = []
+    for i, (channel, img) in enumerate(channel_to_img.items()):
+        color = cmap[i] if not isinstance(cmap, dict) else cmap[channel]
+        new = img.copy().astype(np.float32)
+        new -= new.min()
+        new /= new.max()
+
+        try:
+            vmax = np.percentile(new[new>0], (contrast_pct)) if np.count_nonzero(new) else 1.
+            new = rescale_intensity(new, in_range=(0., vmax))
+        except IndexError:
+            pass
+
+        new = np.repeat(np.expand_dims(new, -1), 3, axis=-1)
+        new *= color
+        img_stack.append(new)
+    stack = np.mean(np.asarray(img_stack), axis=0)
+    stack -= stack.min()
+    stack /= stack.max()
+    return stack

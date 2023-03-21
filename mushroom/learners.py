@@ -5,8 +5,8 @@ import pytorch_lightning as pl
 import numpy as np
 import tifffile
 import torch
-from torch.utils.data import DataLoader, Dataset
-from einops import rearrange, reduce
+from torch.utils.data import DataLoader
+from einops import rearrange
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 import mushroom.utils as utils
@@ -44,22 +44,38 @@ DEFAULT_ST_EXPRESSION_LEARNER_CONFIG = {
 }
 
 class STExpressionLearner(object):
-    def __init__(self, train_adatas, val_adatas, train_hes, val_hes, config,
+    def __init__(self, train_adatas, val_adatas, config,
+                 train_hes=None, val_hes=None, is_fullres=False,
                  batch_size=16, num_workers=20, logger=None):
         self.train_adatas, self.val_adatas = train_adatas, val_adatas
         self.train_hes, self.val_hes = train_hes, val_hes
+        self.is_fullres = is_fullres
+
+        if self.train_hes is not None:
+            self.is_fullres = True
+
         if not isinstance(train_adatas, dict):
             self.train_adatas = {f'train_sample_{i}':a for i, a in range(train_adatas)}
         if not isinstance(val_adatas, dict):
             self.val_adatas = {f'val_sample_{i}':a for i, a in range(val_adatas)}
-        if not isinstance(train_hes, dict):
-            self.train_hes = {f'train_sample_{i}':a for i, a in range(train_hes)}
-        if not isinstance(val_hes, dict):
-            self.val_hes = {f'val_sample_{i}':a for i, a in range(val_hes)}
+
+        if train_hes is not None:
+            if not isinstance(train_hes, dict):
+                self.train_hes = {f'train_sample_{i}':a for i, a in range(train_hes)}
+        else:
+            self.train_hes = {sid:utils.extract_he_from_adata(a)
+                              for sid, a in self.train_adatas.items()}
+        if val_hes is not None:
+            if not isinstance(val_hes, dict):
+                self.val_hes = {f'val_sample_{i}':a for i, a in range(val_hes)}
+        else:
+            self.val_hes = {sid:utils.extract_he_from_adata(a)
+                            for sid, a in self.val_adatas.items()}
 
         self.config = DEFAULT_ST_EXPRESSION_LEARNER_CONFIG.copy()
         self.config.update({k:v for k, v in config.items() if not isinstance(v, dict)})
         self.config['training'].update(config['training'])
+        print(self.config)
         self.config['genes'] = next(iter(self.train_adatas.values())).var.index.to_list()
 
         self.logger = logger
@@ -75,8 +91,8 @@ class STExpressionLearner(object):
             p=.95, size=(int(self.size[0] * self.context_res), int(self.size[1] * self.context_res)),
             means=self.means, stds=self.stds)
         self.sid_to_train_ds = {sid:STDataset(
-                                    a, self.train_hes[sid],
-                                    transform=self.train_transform, scale=self.scale,
+                                    a, self.train_hes[sid], is_fullres=self.is_fullres,
+                                    size=self.size, transform=self.train_transform, scale=self.scale,
                                     max_voxels_per_sample=self.max_voxels)
                                 for sid, a in self.train_adatas.items()}
 
@@ -84,8 +100,8 @@ class STExpressionLearner(object):
             p=.0, size=(int(self.size[0] * self.context_res), int(self.size[1] * self.context_res)),
             means=self.means, stds=self.stds)
         self.sid_to_val_ds = {sid:STDataset(
-                                    a, self.val_hes[sid],
-                                    transform=self.val_transform, scale=self.scale,
+                                    a, self.val_hes[sid], is_fullres=self.is_fullres,
+                                    size=self.size, transform=self.val_transform, scale=self.scale,
                                     max_voxels_per_sample=self.max_voxels)
                                 for sid, a in self.val_adatas.items()}
 
@@ -112,11 +128,12 @@ class STExpressionLearner(object):
 
         self.model = STExpressionLightning(m, self.config)
 
-    def create_trainer(self):
+    def create_trainer(self, plot_genes=None):
         callbacks = [
                 STExpressionLoggingCallback(
                     log_every=self.config['training']['log_every'],
-                    log_n_samples=self.config['training']['log_n_samples']
+                    log_n_samples=self.config['training']['log_n_samples'],
+                    plot_genes=plot_genes if plot_genes is not None else self.config['genes']
                 )
         ]
         if self.config['training']['chkpt_every'] is not None:
@@ -140,11 +157,11 @@ class STExpressionLearner(object):
             logger=self.logger
         )
 
-    def fit(self):
+    def fit(self, plot_genes=None):
         if self.model is None:
             self.create_model()
         if self.trainer is None:
-            self.create_trainer()
+            self.create_trainer(plot_genes=plot_genes)
         self.trainer.fit(model=self.model,
                          train_dataloaders=self.train_dl, val_dataloaders=self.val_dl)
         

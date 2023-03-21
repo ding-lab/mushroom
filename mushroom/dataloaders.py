@@ -11,17 +11,29 @@ from mushroom.utils import rescale_img, create_circular_mask, project_expression
 from mushroom.transforms import OverlaidHETransform
 
 
-def incorporate_hi_res(adata, he, scale=.05):
-    spot_diameter = next(iter(adata.uns['spatial'].values()))['scalefactors']['spot_diameter_fullres']
+def incorporate_hi_res(adata, he, scale=.05, is_fullres=False, trim=True):
+    spot_diameter_fullres = next(iter(adata.uns['spatial'].values()))['scalefactors']['spot_diameter_fullres']
+    tissue_hires_scalef = next(iter(adata.uns['spatial'].values()))['scalefactors']['tissue_hires_scalef']
+    if is_fullres:
+        spot_diameter = spot_diameter_fullres
+        spatial_obsm = adata.obsm['spatial']
+    else:
+        spot_diameter = spot_diameter_fullres * tissue_hires_scalef
+        spatial_obsm = (adata.obsm['spatial'] * tissue_hires_scalef).astype(int)
     spot_diameter, spot_radius = int(spot_diameter), int(spot_diameter / 2)
-    c_min, r_min = np.min(adata.obsm['spatial'], axis=0) - spot_radius
-    c_max, r_max = np.max(adata.obsm['spatial'], axis=0) + spot_radius
 
-    adata.uns['trimmed'] = he[r_min:r_max, c_min:c_max]
-    adata.obsm['spatial_trimmed'] = adata.obsm['spatial'] + np.asarray([-c_min, -r_min])
+    c_min, r_min = np.min(spatial_obsm, axis=0) - spot_radius
+    c_max, r_max = np.max(spatial_obsm, axis=0) + spot_radius
 
-    adata.uns[f'trimmed_{scale}'] = rescale_img(adata.uns['trimmed'], scale=scale)
-    adata.uns[f'spatial_trimmed_{scale}'] = adata.obsm['spatial_trimmed'] * scale
+    if trim:
+        adata.uns['trimmed'] = he[r_min:r_max, c_min:c_max]
+        adata.obsm['spatial_trimmed'] = spatial_obsm + np.asarray([-c_min, -r_min])
+    else:
+        adata.uns['trimmed'] = he
+        adata.obsm['spatial_trimmed'] = spatial_obsm
+
+    adata.uns[f'trimmed_{scale}'] = rescale_img(adata.uns['trimmed'], scale=scale, )
+    adata.uns[f'spatial_trimmed_{scale}'] = (adata.obsm['spatial_trimmed'] * scale).astype(int)
 
     sr = int(scale * spot_radius)
     labeled_img = np.zeros((adata.uns[f'trimmed_{scale}'].shape[0], adata.uns[f'trimmed_{scale}'].shape[1]),
@@ -58,11 +70,12 @@ def create_masks(labeled_mask, voxel_idxs, max_area, thresh=.25):
 class STDataset(Dataset):
     """Registration Dataset"""
     def __init__(self, adata, he, size=(256, 256), transform=OverlaidHETransform(),
-                 scale=.5, length=None, max_voxels_per_sample=16):
+                 scale=.5, length=None, max_voxels_per_sample=16, is_fullres=False):
         self.scale = scale
         self.size = size
+        self.is_fullres = is_fullres
 
-        self.adata = incorporate_hi_res(adata, he, scale=scale)
+        self.adata = incorporate_hi_res(adata, he, scale=scale, is_fullres=is_fullres)
         self.genes = self.adata.var.index.to_list()
         self.length = self.adata.shape[0] if length is None else length
         self.max_voxels_per_sample = max_voxels_per_sample
@@ -121,6 +134,13 @@ class STDataset(Dataset):
         voxel_idxs = F.pad(voxel_idxs, (0, padding))
         X = torch.concat((X, torch.zeros((padding, X.shape[1]))))
         masks = torch.concat((masks, torch.zeros((padding, masks.shape[-2], masks.shape[-1]), dtype=torch.bool)))
+
+        # plt.imshow(rearrange(he, 'c h w -> h w c'))
+        # plt.title('he')
+        # plt.show()
+        # plt.imshow(rearrange(context_he, 'c h w -> h w c'))
+        # plt.title('he context')
+        # plt.show()
 
         return {
             'he': he,
