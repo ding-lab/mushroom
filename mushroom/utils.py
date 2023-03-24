@@ -1,15 +1,18 @@
 import os
+import logging
 import re
 
 import numpy as np
 import seaborn as sns
+import scanpy as sc
+import tifffile
 import torch
 import torchvision.transforms.functional as TF
 import numpy as np
 from einops import rearrange
 from skimage.exposure import rescale_intensity
 from tifffile import TiffFile
-from ome_types import from_tiff, from_xml
+from ome_types import from_tiff, from_xml, to_xml, model
 
 
 def listfiles(folder, regex=None):
@@ -55,11 +58,39 @@ def extract_he_from_adata(adata):
     return next(iter(adata.uns['spatial'].values()))['images']['hires']
 
 
+def flexible_rescale(img, scale=.5, size=None):
+    if size is None:
+        size = int(img.shape[0] * scale), int(img.shape[1] * scale)
+
+    if not isinstance(img, torch.Tensor):
+        is_tensor = False
+        img = torch.tensor(img)
+    else:
+        is_tensor = True
+
+    if img.shape[0] not in [1, 3]:
+        channel_first = False
+        img = rearrange(img, 'h w c -> c h w')
+    else:
+        channel_first = True
+
+    img = TF.resize(img, size=size)
+
+    if not channel_first:
+        img = rearrange(img, 'c h w -> h w c')
+
+    if not is_tensor:
+        img = img.numpy()
+
+    return img
+
+
 def rescale_img(img, scale=.5, shape=None):
     if shape is None:
         h, w = int(img.shape[0] * scale), int(img.shape[1] * scale)
     else:
         h, w = shape
+        
     scaled = TF.resize(rearrange(torch.Tensor(img), 'h w c -> c h w'), size=(h, w))
     scaled = rearrange(scaled, 'c h w -> h w c').numpy()
     
@@ -160,3 +191,52 @@ def make_pseudo(channel_to_img, cmap=None, contrast_pct=20.):
     stack -= stack.min()
     stack /= stack.max()
     return stack
+
+
+def adata_from_visium(fp):
+    sid = fp.split('/')[-1]
+    a = sc.read_visium(fp)
+    a.var_names_make_unique()
+    a.obsm['spatial'] = a.obsm['spatial'].astype(int)
+    return a
+
+
+def save_ome_tiff(channel_to_img, filepath):
+    """
+    Generate an ome tiff from channel to image map
+    """
+    n_channels = len(channel_to_img)
+    logging.info(f'image has {n_channels} total biomarkers')
+
+    with tifffile.TiffWriter(filepath, ome=True, bigtiff=True) as out_tif:
+        biomarkers = []
+        for i, (biomarker, img) in enumerate(channel_to_img.items()):
+            x, y = img.shape[1], img.shape[0]
+            biomarkers.append(biomarker)
+            logging.info(f'writing {biomarker}')
+
+            out_tif.write(img)
+        o = model.OME()
+        o.images.append(
+            model.Image(
+                id='Image:0',
+                pixels=model.Pixels(
+                    dimension_order='XYCZT',
+                    size_c=n_channels,
+                    size_t=1,
+                    size_x=x,
+                    size_y=y,
+                    size_z=1,
+                    type='float',
+                    big_endian=False,
+                    channels=[model.Channel(id=f'Channel:{i}', name=c) for i, c in enumerate(biomarkers)],
+                )
+            )
+        )
+
+        im = o.images[0]
+        for i in range(len(im.pixels.channels)):
+            im.pixels.planes.append(model.Plane(the_c=i, the_t=0, the_z=0))
+        im.pixels.tiff_data_blocks.append(model.TiffData(plane_count=len(im.pixels.channels)))
+        xml_str = to_xml(o)
+        out_tif.overwrite_description(xml_str.encode())
