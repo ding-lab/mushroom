@@ -114,6 +114,9 @@ def regenerate_adata(he, adata, ddf, phenocycler_pixels_per_micron=1.96049119060
     d['images']['hires'] = rearrange(hires, 'c h w -> h w c').numpy()
     d['images']['lowres'] = rearrange(lowres, 'c h w -> h w c').numpy()
 
+    scalefactors['spot_diameter_fullres'] *= scale
+    scalefactors['fiducial_diameter_fullres'] *= scale
+
     new.obsm['spatial_original'] = new.obsm['spatial'].copy()
     x = (torch.tensor(new.obsm['spatial']) * scale).to(torch.long)
     x = x[:, [1, 0]]
