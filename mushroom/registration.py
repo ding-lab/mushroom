@@ -43,6 +43,9 @@ def warp_image(moving, ddf):
     h_idxs = torch.round(ref_grid_h + masked_ddf[-2]).to(torch.long)
     w_idxs = torch.round(ref_grid_w + masked_ddf[-1]).to(torch.long)
 
+    h_idxs[h_idxs>= moving.shape[-2]] = 0
+    w_idxs[w_idxs>= moving.shape[-1]] = 0
+
     warped = moving[..., h_idxs, w_idxs]
     warped[..., mask.sum(0)<2] = 0
     

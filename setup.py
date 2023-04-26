@@ -39,10 +39,11 @@ setup(
         'torch',
         'torchvision',
         'pytorch-lightning',
+        'kmeans_pytorch',
         'timm',
         'einops',
         'wandb',
-        'kornia'
+        'pyvista'
     ],
     include_package_data=True,
 
