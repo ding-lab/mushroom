@@ -43,7 +43,8 @@ setup(
         'timm',
         'einops',
         'wandb',
-        'pyvista'
+        'pyvista',
+        'alphashape'
     ],
     include_package_data=True,
 

@@ -327,3 +327,47 @@ class HEPredictionDataset(Dataset):
 
         print(f'original H&E shape: {self.full_res_he_shape}')
         print(f'retiled H&E shape: {img.shape}')
+
+
+class SliceTripletDataset(Dataset):
+    def __init__(self, slices):
+        self.slices = slices
+        self.idxs = torch.arange(len(self.slices[0]))
+    
+    def __len__(self):
+        return len(self.idxs)
+    
+    def __getitem__(self, idx):
+        neg_patch_idx = torch.randint(0, len(self.idxs), (1,)).item()
+        
+        pool = np.arange(len(self.slices))
+        anchor_slide_idx = np.random.choice(pool)
+
+        choices = []
+        if anchor_slide_idx != 0:
+            choices.append(anchor_slide_idx - 1)
+        if anchor_slide_idx != len(pool) - 1:
+            choices.append(anchor_slide_idx + 1)
+        pos_slide_idx = np.random.choice(choices)
+
+        neg_slide_idx = np.random.choice(pool)
+        
+        return {
+            'anchor': self.slices[anchor_slide_idx][idx],
+            'pos': self.slices[pos_slide_idx][idx],
+            'neg': self.slices[neg_slide_idx][neg_patch_idx]
+        }
+
+
+class SliceEncoderDataset(Dataset):
+    def __init__(self, slices):
+        self.slices = slices
+        self.tups = [(i, j) for i, s in enumerate(slices) for j in range(len(s))]
+    
+    def __len__(self):
+        return len(self.tups)
+    
+    def __getitem__(self, idx):
+        slice_idx, patch_idx = self.tups[idx]
+        
+        return self.slices[slice_idx][patch_idx]
