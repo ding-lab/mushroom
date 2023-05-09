@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from kmeans_pytorch import kmeans, kmeans_predict
 from sklearn.cluster import DBSCAN
+from timm import create_model
 
 from mushroom.utils import HidePrint
 
@@ -113,130 +114,44 @@ def cluster_pt_clouds(pts, clusters, collapse_z=True, eps=.01, alpha=.25):
 
 
 class SliceClustering(torch.nn.Module):
-    def __init__(self, in_dim, n_clusters=20, emb_dim=64, tol=1., triplet_scaler=1., cluster_scaler=1.):
+    def __init__(self, in_dim, emb_dim=64):
         super().__init__()
         self.in_dim = in_dim
         self.emb_dim = emb_dim
-        self.tol = tol
-        self.n_clusters = n_clusters
-        self.triplet_scaler = triplet_scaler
-        self.cluster_scaler = cluster_scaler
-        
+
+        feat_out_size = 1000
         self.encoder = torch.nn.Sequential(
-            torch.nn.Linear(self.in_dim, self.in_dim // 2),
-            torch.nn.BatchNorm1d(self.in_dim // 2),
+            create_model('resnet18', in_chans=self.in_dim),
+            torch.nn.Linear(feat_out_size, feat_out_size // 2),
+            torch.nn.BatchNorm1d(feat_out_size // 2),
             torch.nn.ReLU(),
-            torch.nn.Linear(self.in_dim // 2, self.in_dim // 4),
-            torch.nn.BatchNorm1d(self.in_dim // 4),
+            torch.nn.Linear(feat_out_size // 2, feat_out_size // 4),
+            torch.nn.BatchNorm1d(feat_out_size // 4),
             torch.nn.ReLU(),
-            torch.nn.Linear(self.in_dim // 4, self.in_dim // 8),
-            torch.nn.BatchNorm1d(self.in_dim // 8),
+            torch.nn.Linear(feat_out_size // 4, feat_out_size // 8),
+            torch.nn.BatchNorm1d(feat_out_size // 8),
             torch.nn.ReLU(),
-            torch.nn.Linear(self.in_dim // 8, self.emb_dim)
+            torch.nn.Linear(feat_out_size // 8, self.emb_dim)
         )
 
-        self.centroids = torch.nn.Parameter(torch.rand(self.n_clusters, self.emb_dim), requires_grad=True)
-
         self.triplet_loss = torch.nn.TripletMarginLoss()
-        # self.cluster_loss = torch.nn.CrossEntropyLoss()
-        self.mse = torch.nn.MSELoss()
-
-        self.target = torch.nn.Parameter(torch.ones((self.n_clusters,)), requires_grad=False)
         
     def calculate_loss(self, result):
         anchor, pos, neg = result['anchor_embs'], result['pos_embs'], result['neg_embs']
-        # anchor_label, pos_label, neg_label = result['anchor_labels'], result['pos_labels'], result['neg_labels']
-        # anchor_dists, pos_dists, neg_dists = result['anchor_dists'], result['pos_dists'], result['neg_dists']
 
-        # if np.random.choice(np.arange(100)) == 1:
-
-        #     print(torch.sum(anchor_label==pos_label))
-        #     print(anchor_label[:10], pos_label[:10])
-
-        triplet_loss = self.triplet_loss(anchor, pos, neg) * self.triplet_scaler
-
-        # probs = torch.nn.functional.one_hot(
-        #     anchor_label, num_classes=self.n_clusters).to(torch.float32)
-        # probs = torch.nn.functional.softmax(anchor_dists)
-        
-        # pos_loss = self.cluster_loss(probs, pos_label)
-        # neg_loss = self.cluster_loss(probs, neg_label)
-        # cluster_loss = pos_loss / neg_loss * self.cluster_scaler
-        # pos_loss = self.cluster_loss(probs, pos_label)
-
-        # anchor_clust_dist = anchor_dists[anchor_label].mean()
-        # pos_clust_dist = pos_dists[pos_label].mean()
-        # neg_clust_dist = neg_dists[neg_label].mean()
-        # attraction_loss = anchor_clust_dist + pos_clust_dist + neg_clust_dist
-
-        # pos_dist_loss = self.mse(anchor_dists[anchor_label], pos_dists[anchor_label])
-        # neg_dist_loss = self.mse(anchor_dists[anchor_label], neg_dists[anchor_label])
-
-        # cluster_loss = pos_dist_loss / neg_dist_loss
-
-        # het_loss = F.kl_div(
-        #     F.softmax(anchor_dists.sum(0), dim=-1),
-        #     F.softmax(self.target, dim=-1)
-        # )
-
-
-        # repulsion_loss = torch.cdist(self.centroids, self.centroids).mean()
-        
-        # if self.centroids is not None:
-        #     dists = torch.cdist(anchor, self.centroids)
-        #     probs = torch.nn.functional.softmax(dists, dim=-1)
-        #     pos_loss = self.cluster_loss(probs, pos_label)
-        #     cluster_loss = pos_loss
-        # else:
-        #     cluster_loss, pos_loss = 1., 1.
+        triplet_loss = self.triplet_loss(anchor, pos, neg)
 
         return {
-            # 'overall': triplet_loss + cluster_loss,
             'overall': triplet_loss
-            # 'cluster': cluster_loss,
-            # 'triplet': triplet_loss,
-            # 'het': het_loss
-            # 'pos_cluster_loss': pos_loss,
-            # 'neg_cluster_loss': neg_loss,
-            # 'repulsion_loss': repulsion_loss,
-            # 'attraction_loss': attraction_loss
         }
-    
-    # def set_centroids(self, embs):
-    #     print('setting centroids')
-    #     with HidePrint():
-    #         cluster_ids_x, cluster_centers = kmeans(
-    #             X=embs, num_clusters=self.n_clusters, tol=self.tol,
-    #             distance='euclidean', device=embs.device
-    #         )
-    #     self.centroids = torch.nn.Parameter(cluster_centers.to(embs.device), requires_grad=True)
-    #     print('centroid shape', self.centroids.shape)
-    
-    def cluster(self, embs):
-        assert self.centroids is not None
-
-        dists = torch.cdist(embs, self.centroids)
-        labels = dists.argmin(dim=1)
-
-        return dists, labels
-
-
-        # with HidePrint():
-        #     out = kmeans_predict(
-        #         embs,
-        #         self.centroids.clone().detach(),
-        #         distance='euclidean',
-        #         device=embs.device,
-        #     ).to(embs.device)
-        # return out
     
     def encode(self, x):
         embs = self.encoder(x)
-        dists, labels = self.cluster(embs)
+        # dists, labels = self.cluster(embs)
         return {
             'embs': embs,
-            'labels': labels,
-            'dists': dists
+            # 'labels': labels,
+            # 'dists': dists
         }
         
     def forward(self, anchor, pos, neg):
@@ -246,14 +161,8 @@ class SliceClustering(torch.nn.Module):
         
         return {
             'anchor_embs': anchor['embs'],
-            'anchor_labels': anchor['labels'],
-            'anchor_dists': anchor['dists'],
             'pos_embs': pos['embs'],
-            'pos_labels': pos['labels'],
-            'pos_dists': pos['dists'],
             'neg_embs': neg['embs'],
-            'neg_labels': neg['labels'],
-            'neg_dists': neg['dists'],
         }
     
 
@@ -292,31 +201,196 @@ class LitSliceClustering(pl.LightningModule):
         return losses
     
     def validation_step(self, batch, batch_idx):
-        return self(batch)
+        anchor, pos, neg = batch['anchor'], batch['pos'], batch['neg']
+        result = self.model(anchor, pos, neg)
+        losses = self.model.calculate_loss(result)
+        losses['val/loss'] = losses['overall']
+        self.log_dict(losses, on_step=False, on_epoch=True, prog_bar=True)
+        losses['loss'] = losses['val/loss']
+        losses['result'] = result
+
+        return losses
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
     
     def forward(self, batch):
-        return self.model.encode(batch)
+        anchor, pos, neg = batch['anchor'], batch['pos'], batch['neg']
+        return self.model(anchor, pos, neg)
 
 
-class ClusteringCentroidCallback(pl.Callback):
-    def __init__(self, dl, iters=0):
-        self.dl = dl
-        self.embs = []
-        self.count = 0
-        self.iters = iters
+# class ClusteringCentroidCallback(pl.Callback):
+#     def __init__(self, dl, iters=0):
+#         self.dl = dl
+#         self.embs = []
+#         self.count = 0
+#         self.iters = iters
 
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
-        if self.count == self.iters:
-            x = outputs['embs']
-            self.embs.append(x)
+#     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+#         if self.count == self.iters:
+#             x = outputs['embs']
+#             self.embs.append(x)
   
-    def on_validation_epoch_end(self, trainer, pl_module):
-        if self.count == self.iters:
-            embs = torch.concat(self.embs)
-            # pl_module.model.set_centroids(embs)
-            self.embs = []
-        self.count += 1
+#     def on_validation_epoch_end(self, trainer, pl_module):
+#         if self.count == self.iters:
+#             embs = torch.concat(self.embs)
+#             # pl_module.model.set_centroids(embs)
+#             self.embs = []
+#         self.count += 1
+
+
+
+
+
+
+
+
+
+
+
+
+
+# class SliceClustering(torch.nn.Module):
+#     def __init__(self, in_dim, n_clusters=20, emb_dim=64, tol=1., triplet_scaler=1., cluster_scaler=1.):
+#         super().__init__()
+#         self.in_dim = in_dim
+#         self.emb_dim = emb_dim
+#         self.tol = tol
+#         self.n_clusters = n_clusters
+#         self.triplet_scaler = triplet_scaler
+#         self.cluster_scaler = cluster_scaler
+        
+#         self.encoder = torch.nn.Sequential(
+#             torch.nn.Linear(self.in_dim, self.in_dim // 2),
+#             torch.nn.BatchNorm1d(self.in_dim // 2),
+#             torch.nn.ReLU(),
+#             torch.nn.Linear(self.in_dim // 2, self.in_dim // 4),
+#             torch.nn.BatchNorm1d(self.in_dim // 4),
+#             torch.nn.ReLU(),
+#             torch.nn.Linear(self.in_dim // 4, self.in_dim // 8),
+#             torch.nn.BatchNorm1d(self.in_dim // 8),
+#             torch.nn.ReLU(),
+#             torch.nn.Linear(self.in_dim // 8, self.emb_dim)
+#         )
+
+#         self.centroids = torch.nn.Parameter(torch.rand(self.n_clusters, self.emb_dim), requires_grad=True)
+
+#         self.triplet_loss = torch.nn.TripletMarginLoss()
+#         # self.cluster_loss = torch.nn.CrossEntropyLoss()
+#         self.mse = torch.nn.MSELoss()
+
+#         self.target = torch.nn.Parameter(torch.ones((self.n_clusters,)), requires_grad=False)
+        
+#     def calculate_loss(self, result):
+#         anchor, pos, neg = result['anchor_embs'], result['pos_embs'], result['neg_embs']
+#         # anchor_label, pos_label, neg_label = result['anchor_labels'], result['pos_labels'], result['neg_labels']
+#         # anchor_dists, pos_dists, neg_dists = result['anchor_dists'], result['pos_dists'], result['neg_dists']
+
+#         # if np.random.choice(np.arange(100)) == 1:
+
+#         #     print(torch.sum(anchor_label==pos_label))
+#         #     print(anchor_label[:10], pos_label[:10])
+
+#         triplet_loss = self.triplet_loss(anchor, pos, neg) * self.triplet_scaler
+
+#         # probs = torch.nn.functional.one_hot(
+#         #     anchor_label, num_classes=self.n_clusters).to(torch.float32)
+#         # probs = torch.nn.functional.softmax(anchor_dists)
+        
+#         # pos_loss = self.cluster_loss(probs, pos_label)
+#         # neg_loss = self.cluster_loss(probs, neg_label)
+#         # cluster_loss = pos_loss / neg_loss * self.cluster_scaler
+#         # pos_loss = self.cluster_loss(probs, pos_label)
+
+#         # anchor_clust_dist = anchor_dists[anchor_label].mean()
+#         # pos_clust_dist = pos_dists[pos_label].mean()
+#         # neg_clust_dist = neg_dists[neg_label].mean()
+#         # attraction_loss = anchor_clust_dist + pos_clust_dist + neg_clust_dist
+
+#         # pos_dist_loss = self.mse(anchor_dists[anchor_label], pos_dists[anchor_label])
+#         # neg_dist_loss = self.mse(anchor_dists[anchor_label], neg_dists[anchor_label])
+
+#         # cluster_loss = pos_dist_loss / neg_dist_loss
+
+#         # het_loss = F.kl_div(
+#         #     F.softmax(anchor_dists.sum(0), dim=-1),
+#         #     F.softmax(self.target, dim=-1)
+#         # )
+
+
+#         # repulsion_loss = torch.cdist(self.centroids, self.centroids).mean()
+        
+#         # if self.centroids is not None:
+#         #     dists = torch.cdist(anchor, self.centroids)
+#         #     probs = torch.nn.functional.softmax(dists, dim=-1)
+#         #     pos_loss = self.cluster_loss(probs, pos_label)
+#         #     cluster_loss = pos_loss
+#         # else:
+#         #     cluster_loss, pos_loss = 1., 1.
+
+#         return {
+#             # 'overall': triplet_loss + cluster_loss,
+#             'overall': triplet_loss
+#             # 'cluster': cluster_loss,
+#             # 'triplet': triplet_loss,
+#             # 'het': het_loss
+#             # 'pos_cluster_loss': pos_loss,
+#             # 'neg_cluster_loss': neg_loss,
+#             # 'repulsion_loss': repulsion_loss,
+#             # 'attraction_loss': attraction_loss
+#         }
+    
+#     # def set_centroids(self, embs):
+#     #     print('setting centroids')
+#     #     with HidePrint():
+#     #         cluster_ids_x, cluster_centers = kmeans(
+#     #             X=embs, num_clusters=self.n_clusters, tol=self.tol,
+#     #             distance='euclidean', device=embs.device
+#     #         )
+#     #     self.centroids = torch.nn.Parameter(cluster_centers.to(embs.device), requires_grad=True)
+#     #     print('centroid shape', self.centroids.shape)
+    
+#     def cluster(self, embs):
+#         assert self.centroids is not None
+
+#         dists = torch.cdist(embs, self.centroids)
+#         labels = dists.argmin(dim=1)
+
+#         return dists, labels
+
+
+#         # with HidePrint():
+#         #     out = kmeans_predict(
+#         #         embs,
+#         #         self.centroids.clone().detach(),
+#         #         distance='euclidean',
+#         #         device=embs.device,
+#         #     ).to(embs.device)
+#         # return out
+    
+#     def encode(self, x):
+#         embs = self.encoder(x)
+#         dists, labels = self.cluster(embs)
+#         return {
+#             'embs': embs,
+#             'labels': labels,
+#             'dists': dists
+#         }
+        
+#     def forward(self, anchor, pos, neg):
+#         anchor = self.encode(anchor)
+#         pos = self.encode(pos)
+#         neg = self.encode(neg)
+        
+#         return {
+#             'anchor_embs': anchor['embs'],
+#             'anchor_labels': anchor['labels'],
+#             'anchor_dists': anchor['dists'],
+#             'pos_embs': pos['embs'],
+#             'pos_labels': pos['labels'],
+#             'pos_dists': pos['dists'],
+#             'neg_embs': neg['embs'],
+#             'neg_labels': neg['labels'],
+#             'neg_dists': neg['dists'],
+#         }

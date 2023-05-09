@@ -64,10 +64,13 @@ def warp_pts(pts, ddf):
     pts - (n, 2) # 2 is h, w
     ddf - (2 h w) # first channel is h displacment, second channel is w displacement
     """
-    img = torch.zeros((ddf.shape[-2], ddf.shape[-1]), dtype=torch.long)
+    if not isinstance(pts, torch.Tensor):
+        pts = torch.tensor(pts)
+
+    max_r, max_c = pts.max(dim=0).values
+    img = torch.zeros((max_r + 1, max_c + 1), dtype=torch.long)
     for i, (r, c) in enumerate(pts):
         img[r, c] = i + 1
-    img.shape
 
     img = warp_image(img, ddf)
 
@@ -77,10 +80,8 @@ def warp_pts(pts, ddf):
         if obj is None:
             continue
 
-        label = i + 1
-
         r, c = obj[0].start, obj[1].start
-        label_to_warped_pt[label - 1] = (r, c)
+        label_to_warped_pt[i] = (r, c)
 
     idxs = torch.arange(pts.shape[0], dtype=torch.long)
     size = (ddf.shape[-2], ddf.shape[-1])

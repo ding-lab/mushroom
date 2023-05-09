@@ -202,7 +202,7 @@ def adata_from_visium(fp):
     return a
 
 
-def save_ome_tiff(channel_to_img, filepath, bbox=None, pixel_type='uint8', subresolutions=4):
+def save_ome_tiff(channel_to_img, filepath, bbox=None, pixel_type='uint8', subresolutions=4, rescale=False):
     """
     Generate an ome tiff from channel to image map
     """
@@ -221,12 +221,12 @@ def save_ome_tiff(channel_to_img, filepath, bbox=None, pixel_type='uint8', subre
     biomarkers = sorted(channel_to_img.keys())
     for i, biomarker in enumerate(biomarkers):
         img = channel_to_img[biomarker]
-        img = tifffile.imread(fp)
         if bbox is not None:
             r1, r2, c1, c2 = bbox
             y = r2 - r1
             x = c2 - c1
             img = img[r1:r2, c1:c2]
+        
         img = img.astype(np.float32)
         img -= img.min()
         img /= img.max()

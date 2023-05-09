@@ -109,6 +109,8 @@ class STExpressionLoggingCallback(pl.Callback):
 class ClusteringLoggingCallback(pl.Callback):
     def __init__(self, dl, slide_shape, cmap=None, n_clusters=20, tol=1.):
         self.embs = []
+        self.rc = []
+        self.slide_idxs = []
         self.dl = dl
         self.slide_shape = slide_shape
         self.n_clusters=n_clusters
@@ -118,28 +120,34 @@ class ClusteringLoggingCallback(pl.Callback):
         self.cmap = cmap if cmap is not None else extended
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
-        x = outputs['embs']
-        self.embs.append(x)
+        self.embs.append(outputs['result']['anchor_embs'])
+        self.rc.append(batch['anchor_rc'])
+        self.slide_idxs.append(batch['anchor_slide_idx'])
   
     def on_validation_epoch_end(self, trainer, pl_module):
         if len(self.embs) == len(self.dl):
-            embs = torch.concat(self.embs)
+            embs = torch.concat(self.embs).clone().detach().cpu()
+            rc = torch.concat(self.rc).clone().detach().cpu()
+            slide_idxs = torch.concat(self.slide_idxs).clone().detach().cpu()
             with HidePrint():
                 cluster_ids_x, cluster_centers = kmeans(
                     X=embs, num_clusters=self.n_clusters, tol=self.tol,
                     distance='euclidean', device=embs.device
                 )
             labels = cluster_ids_x.to(torch.long)
-            slides = torch.tensor([x for x, _ in self.dl.dataset.tups])
 
-            pool = torch.unique(slides)
+            pool = torch.unique(slide_idxs)
             imgs = []
             for slide in pool:
-                mask = slides==slide
-                flat_labels = labels[mask]
-                img_labels = rearrange(flat_labels, '(h w) -> h w', h=self.slide_shape[-2])
-                img_labels = img_labels.clone().detach().cpu()
-                rgb = display_labeled_as_rgb(img_labels, cmap=self.cmap)
+                mask = slide_idxs==slide
+                masked_labels = labels[mask]
+                masked_rc = rc[mask]
+
+                labeled = torch.zeros((self.slide_shape[-2], self.slide_shape[-1]), dtype=torch.long)
+                for (r, c), label in zip(masked_rc, masked_labels):
+                    labeled[r, c] = label
+
+                rgb = display_labeled_as_rgb(labeled, cmap=self.cmap)
                 imgs.append(rgb)
             trainer.logger.log_image(
                 key=f"val/clustered_image",
@@ -147,6 +155,8 @@ class ClusteringLoggingCallback(pl.Callback):
                 caption=[i for i in range(len(imgs))]
             )
         self.embs = []
+        self.rc = []
+        self.slide_idxs = []
 
                  
 
