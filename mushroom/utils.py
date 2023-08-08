@@ -323,7 +323,8 @@ def display_labeled_as_rgb(labeled, cmap=None):
     if len(cmap) < len(labels):
         raise RuntimeError('cmap is too small')
     new = np.zeros((labeled.shape[0], labeled.shape[1], 3))
-    for l, c in zip(labels, cmap):
+    for l in labels:
+        c = cmap[l]
         new[labeled==l] = c
     return new
 

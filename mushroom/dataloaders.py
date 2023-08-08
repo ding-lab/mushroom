@@ -330,49 +330,105 @@ class HEPredictionDataset(Dataset):
 
 
 class SliceTripletDataset(Dataset):
-    def __init__(self, slices, size=8):
-        self.slices = TF.pad(slices, size // 2, padding_mode='reflect') # (n, d, h, w)
-        self.rc = np.asarray(
-            [[r, c]
-            for r in range(size // 2, self.slices.shape[-2] - (size // 2), 1)
-            for c in range(size // 2, self.slices.shape[-1] - (size // 2), 1)])
-        self.size = size
+    def __init__(self, anchor_slice, adj_slice, anchor_labels):
+        self.anchor_slice = anchor_slice # (d, h, w)
+        self.adj_slice = adj_slice # (d, h, w)
+        self.anchor_labels = anchor_labels # (h, w)
+
+        self.rc = torch.tensor([[r, c]
+                                for r in range(self.anchor_slice.shape[-2])
+                                for c in range(self.anchor_slice.shape[-1])], dtype=torch.long)
+        
+
+        self.idxs = torch.arange(len(self.rc))
     
     def __len__(self):
-        return len(self.rc)
+        return len(self.idxs)
     
     def __getitem__(self, idx):
-        neg_patch_idx = torch.randint(0, len(self.rc), (1,)).item()
-        
-        pool = np.arange(len(self.slices))
-        anchor_slide_idx = np.random.choice(pool)
+        anchor_idx = idx
+        neg_idx = torch.randint(0, len(self.idxs), (1,)).item()
 
-        choices = []
-        if anchor_slide_idx != 0:
-            choices.append(anchor_slide_idx - 1)
-        if anchor_slide_idx != len(pool) - 1:
-            choices.append(anchor_slide_idx + 1)
-        pos_slide_idx = np.random.choice(choices)
+        anchor_r, anchor_c = self.rc[anchor_idx]
+        neg_r, neg_c = self.rc[neg_idx]
 
-        neg_slide_idx = np.random.choice(pool)
-
-        anchor_r, anchor_c = self.rc[idx]
-        anchor_r1, anchor_r2 = anchor_r - (self.size // 2), anchor_r + (self.size // 2)
-        anchor_c1, anchor_c2 = anchor_c - (self.size // 2), anchor_c + (self.size // 2)
-        neg_r, neg_c = self.rc[neg_patch_idx]
-        neg_r1, neg_r2 = neg_r - (self.size // 2), neg_r + (self.size // 2)
-        neg_c1, neg_c2 = neg_c - (self.size // 2), neg_c + (self.size // 2)
         
         return {
-            'anchor': self.slices[anchor_slide_idx, :, anchor_r1:anchor_r2, anchor_c1:anchor_c2],
-            'pos': self.slices[pos_slide_idx, :, anchor_r1:anchor_r2, anchor_c1:anchor_c2],
-            'neg': self.slices[neg_slide_idx, :, neg_r1:neg_r2, neg_c1:neg_c2],
-            'anchor_rc': self.rc[idx] - self.size,
-            'neg_rc': self.rc[neg_patch_idx] - self.size,
-            'anchor_slide_idx': anchor_slide_idx,
-            'pos_slide_idx': pos_slide_idx,
-            'neg_slide_idx': neg_slide_idx
+            'anchor': self.anchor_slice[:, anchor_r, anchor_c],
+            'pos': self.adj_slice[:, anchor_r, anchor_c],
+            'neg': self.anchor_slice[:, neg_r, neg_c],
+            'anchor_rc': torch.tensor([anchor_r, anchor_c]),
+            'neg_rc': torch.tensor([neg_r, neg_c]),
+            'anchor_label': self.anchor_labels[anchor_r, anchor_c]
         }
+
+
+class SliceEncoderDataset(Dataset):
+    def __init__(self, slices):
+        self.slices = slices
+        self.rc = torch.tensor([[r, c]
+                                for r in range(self.slices[0].shape[-2])
+                                for c in range(self.slices[0].shape[-1])], dtype=torch.long)
+        self.tups = [(i, j) for i, s in enumerate(slices) for j in range(len(self.rc))]
+    
+    def __len__(self):
+        return len(self.tups)
+    
+    def __getitem__(self, idx):
+        slice_idx, patch_idx = self.tups[idx]
+        r, c = self.rc[patch_idx]
+        
+        return {
+            'emb': self.slices[slice_idx][:, r, c],
+            'rc': torch.tensor([r, c]),
+            'slide_idx': slice_idx,
+        }
+
+
+# class SliceTripletDataset(Dataset):
+#     def __init__(self, slices, size=8):
+#         self.slices = TF.pad(slices, size // 2, padding_mode='reflect') # (n, d, h, w)
+#         self.rc = np.asarray(
+#             [[r, c]
+#             for r in range(size // 2, self.slices.shape[-2] - (size // 2), 1)
+#             for c in range(size // 2, self.slices.shape[-1] - (size // 2), 1)])
+#         self.size = size
+    
+#     def __len__(self):
+#         return len(self.rc)
+    
+#     def __getitem__(self, idx):
+#         neg_patch_idx = torch.randint(0, len(self.rc), (1,)).item()
+        
+#         pool = np.arange(len(self.slices))
+#         anchor_slide_idx = np.random.choice(pool)
+
+#         choices = []
+#         if anchor_slide_idx != 0:
+#             choices.append(anchor_slide_idx - 1)
+#         if anchor_slide_idx != len(pool) - 1:
+#             choices.append(anchor_slide_idx + 1)
+#         pos_slide_idx = np.random.choice(choices)
+
+#         neg_slide_idx = np.random.choice(pool)
+
+#         anchor_r, anchor_c = self.rc[idx]
+#         anchor_r1, anchor_r2 = anchor_r - (self.size // 2), anchor_r + (self.size // 2)
+#         anchor_c1, anchor_c2 = anchor_c - (self.size // 2), anchor_c + (self.size // 2)
+#         neg_r, neg_c = self.rc[neg_patch_idx]
+#         neg_r1, neg_r2 = neg_r - (self.size // 2), neg_r + (self.size // 2)
+#         neg_c1, neg_c2 = neg_c - (self.size // 2), neg_c + (self.size // 2)
+        
+#         return {
+#             'anchor': self.slices[anchor_slide_idx, :, anchor_r1:anchor_r2, anchor_c1:anchor_c2],
+#             'pos': self.slices[pos_slide_idx, :, anchor_r1:anchor_r2, anchor_c1:anchor_c2],
+#             'neg': self.slices[neg_slide_idx, :, neg_r1:neg_r2, neg_c1:neg_c2],
+#             'anchor_rc': self.rc[idx] - self.size,
+#             'neg_rc': self.rc[neg_patch_idx] - self.size,
+#             'anchor_slide_idx': anchor_slide_idx,
+#             'pos_slide_idx': pos_slide_idx,
+#             'neg_slide_idx': neg_slide_idx
+#         }
 
 
 # class SliceEncoderDataset(Dataset):

@@ -114,44 +114,107 @@ def cluster_pt_clouds(pts, clusters, collapse_z=True, eps=.01, alpha=.25):
 
 
 class SliceClustering(torch.nn.Module):
-    def __init__(self, in_dim, emb_dim=64):
+    def __init__(self, in_dim, n_clusters=20, emb_dim=64, triplet_scaler=1., cluster_scaler=1.):
         super().__init__()
         self.in_dim = in_dim
         self.emb_dim = emb_dim
-
-        feat_out_size = 1000
+        self.n_clusters = n_clusters
+        self.triplet_scaler = triplet_scaler
+        self.cluster_scaler = cluster_scaler
+        
         self.encoder = torch.nn.Sequential(
-            create_model('resnet18', in_chans=self.in_dim),
-            torch.nn.Linear(feat_out_size, feat_out_size // 2),
-            torch.nn.BatchNorm1d(feat_out_size // 2),
+            torch.nn.Linear(self.in_dim, self.in_dim // 2),
+            torch.nn.BatchNorm1d(self.in_dim // 2),
             torch.nn.ReLU(),
-            torch.nn.Linear(feat_out_size // 2, feat_out_size // 4),
-            torch.nn.BatchNorm1d(feat_out_size // 4),
+            torch.nn.Linear(self.in_dim // 2, self.in_dim // 4),
+            torch.nn.BatchNorm1d(self.in_dim // 4),
             torch.nn.ReLU(),
-            torch.nn.Linear(feat_out_size // 4, feat_out_size // 8),
-            torch.nn.BatchNorm1d(feat_out_size // 8),
+            torch.nn.Linear(self.in_dim // 4, self.in_dim // 8),
+            torch.nn.BatchNorm1d(self.in_dim // 8),
             torch.nn.ReLU(),
-            torch.nn.Linear(feat_out_size // 8, self.emb_dim)
+            torch.nn.Linear(self.in_dim // 8, self.emb_dim)
         )
 
-        self.triplet_loss = torch.nn.TripletMarginLoss()
-        
-    def calculate_loss(self, result):
-        anchor, pos, neg = result['anchor_embs'], result['pos_embs'], result['neg_embs']
+        self.centroids = torch.nn.Parameter(torch.rand(self.n_clusters, self.emb_dim), requires_grad=True)
 
-        triplet_loss = self.triplet_loss(anchor, pos, neg)
+        self.triplet_loss = torch.nn.TripletMarginLoss()
+        self.cluster_loss = torch.nn.CrossEntropyLoss()
+        
+    def calculate_loss(self, result, anchor_true):
+        anchor, pos, neg = result['anchor_embs'], result['pos_embs'], result['neg_embs']
+        anchor_label, pos_label, neg_label = result['anchor_labels'], result['pos_labels'], result['neg_labels']
+        anchor_dists, pos_dists, neg_dists = result['anchor_dists'], result['pos_dists'], result['neg_dists']
+
+        triplet_loss = self.triplet_loss(anchor, pos, neg) * 1.
+
+        probs = torch.nn.functional.softmax(anchor_dists, dim=-1)
+        anchor_cluster_loss = self.cluster_loss(probs, anchor_true) * .01
+
+        probs = torch.nn.functional.softmax(pos_dists, dim=-1)
+        pos_cluster_loss = self.cluster_loss(probs, anchor_true) * .99
+
+        cluster_loss = (anchor_cluster_loss + pos_cluster_loss) * 0
+        
+        # pos_loss = self.cluster_loss(probs, pos_label)
+        # neg_loss = self.cluster_loss(probs, neg_label)
+        # cluster_loss = pos_loss / neg_loss * self.cluster_scaler
+        # pos_loss = self.cluster_loss(probs, pos_label)
+
+        # anchor_clust_dist = anchor_dists[anchor_label].mean()
+        # pos_clust_dist = pos_dists[pos_label].mean()
+        # neg_clust_dist = neg_dists[neg_label].mean()
+        # attraction_loss = anchor_clust_dist + pos_clust_dist + neg_clust_dist
+
+        # pos_dist_loss = self.mse(anchor_dists[anchor_label], pos_dists[anchor_label])
+        # neg_dist_loss = self.mse(anchor_dists[anchor_label], neg_dists[anchor_label])
+
+        # cluster_loss = pos_dist_loss / neg_dist_loss
+
+        # het_loss = F.kl_div(
+        #     F.softmax(anchor_dists.sum(0), dim=-1),
+        #     F.softmax(self.target, dim=-1)
+        # )
+
+
+        # repulsion_loss = torch.cdist(self.centroids, self.centroids).mean()
+        
+        # if self.centroids is not None:
+        #     dists = torch.cdist(anchor, self.centroids)
+        #     probs = torch.nn.functional.softmax(dists, dim=-1)
+        #     pos_loss = self.cluster_loss(probs, pos_label)
+        #     cluster_loss = pos_loss
+        # else:
+        #     cluster_loss, pos_loss = 1., 1.
 
         return {
-            'overall': triplet_loss
+            'overall': triplet_loss + cluster_loss,
+            # 'overall': triplet_loss
+            'cluster': cluster_loss,
+            'triplet': triplet_loss,
+            'anchor_cluster_loss': anchor_cluster_loss,
+            'pos_cluster_loss': pos_cluster_loss,
+            # 'het': het_loss
+            # 'pos_cluster_loss': pos_loss,
+            # 'neg_cluster_loss': neg_loss,
+            # 'repulsion_loss': repulsion_loss,
+            # 'attraction_loss': attraction_loss
         }
+    
+    def cluster(self, embs):
+        assert self.centroids is not None
+
+        dists = torch.cdist(embs, self.centroids)
+        labels = dists.argmin(dim=1)
+
+        return dists, labels
     
     def encode(self, x):
         embs = self.encoder(x)
-        # dists, labels = self.cluster(embs)
+        dists, labels = self.cluster(embs)
         return {
             'embs': embs,
-            # 'labels': labels,
-            # 'dists': dists
+            'labels': labels,
+            'dists': dists
         }
         
     def forward(self, anchor, pos, neg):
@@ -161,8 +224,14 @@ class SliceClustering(torch.nn.Module):
         
         return {
             'anchor_embs': anchor['embs'],
+            'anchor_labels': anchor['labels'],
+            'anchor_dists': anchor['dists'],
             'pos_embs': pos['embs'],
+            'pos_labels': pos['labels'],
+            'pos_dists': pos['dists'],
             'neg_embs': neg['embs'],
+            'neg_labels': neg['labels'],
+            'neg_dists': neg['dists'],
         }
     
 
@@ -182,7 +251,9 @@ class LitSliceClustering(pl.LightningModule):
         checkpoint = torch.load(checkpoint_path)
         config = checkpoint['hyper_parameters']['config']
         m = SliceClustering(
-            config['in_dim']
+            config['in_dim'],
+            n_clusters=config['n_clusters'],
+            emb_dim=config['emb_dim'],
         )
         d = {re.sub(r'^model.(.*)$', r'\1', k):v for k, v in checkpoint['state_dict'].items()}
         m.load_state_dict(d)
@@ -190,10 +261,11 @@ class LitSliceClustering(pl.LightningModule):
         return LitSliceClustering(m, config)
 
     def training_step(self, batch, batch_idx):
-        anchor, pos, neg = batch['anchor'], batch['pos'], batch['neg']
+        anchor, pos, neg, anchor_true = batch['anchor'], batch['pos'], batch['neg'], batch['anchor_label']
         result = self.model(anchor, pos, neg)
-        losses = self.model.calculate_loss(result)
-        losses['train/loss'] = losses['overall']
+        losses = self.model.calculate_loss(result, anchor_true)
+        losses = {f'train/{k}':v for k, v in losses.items()}
+        losses['train/loss'] = losses['train/overall']
         self.log_dict(losses, on_step=False, on_epoch=True, prog_bar=True)
         losses['loss'] = losses['train/loss']
         losses['result'] = result
@@ -201,23 +273,21 @@ class LitSliceClustering(pl.LightningModule):
         return losses
     
     def validation_step(self, batch, batch_idx):
-        anchor, pos, neg = batch['anchor'], batch['pos'], batch['neg']
-        result = self.model(anchor, pos, neg)
-        losses = self.model.calculate_loss(result)
-        losses['val/loss'] = losses['overall']
-        self.log_dict(losses, on_step=False, on_epoch=True, prog_bar=True)
-        losses['loss'] = losses['val/loss']
-        losses['result'] = result
-
-        return losses
+        emb = batch['emb']
+        result = self.model.encode(emb)
+        
+        return result
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
     
     def forward(self, batch):
-        anchor, pos, neg = batch['anchor'], batch['pos'], batch['neg']
-        return self.model(anchor, pos, neg)
+        emb = batch['emb']
+        return {
+            'result': self.model.encode(emb),
+            'batch': batch
+        }
 
 
 # class ClusteringCentroidCallback(pl.Callback):
@@ -394,3 +464,57 @@ class LitSliceClustering(pl.LightningModule):
 #             'neg_labels': neg['labels'],
 #             'neg_dists': neg['dists'],
 #         }
+
+
+# class SliceClustering(torch.nn.Module):
+#     def __init__(self, in_dim, emb_dim=64):
+#         super().__init__()
+#         self.in_dim = in_dim
+#         self.emb_dim = emb_dim
+
+#         feat_out_size = 1000
+#         self.encoder = torch.nn.Sequential(
+#             create_model('resnet18', in_chans=self.in_dim),
+#             torch.nn.Linear(feat_out_size, feat_out_size // 2),
+#             torch.nn.BatchNorm1d(feat_out_size // 2),
+#             torch.nn.ReLU(),
+#             torch.nn.Linear(feat_out_size // 2, feat_out_size // 4),
+#             torch.nn.BatchNorm1d(feat_out_size // 4),
+#             torch.nn.ReLU(),
+#             torch.nn.Linear(feat_out_size // 4, feat_out_size // 8),
+#             torch.nn.BatchNorm1d(feat_out_size // 8),
+#             torch.nn.ReLU(),
+#             torch.nn.Linear(feat_out_size // 8, self.emb_dim)
+#         )
+
+#         self.triplet_loss = torch.nn.TripletMarginLoss()
+        
+#     def calculate_loss(self, result):
+#         anchor, pos, neg = result['anchor_embs'], result['pos_embs'], result['neg_embs']
+
+#         triplet_loss = self.triplet_loss(anchor, pos, neg)
+
+#         return {
+#             'overall': triplet_loss
+#         }
+    
+#     def encode(self, x):
+#         embs = self.encoder(x)
+#         # dists, labels = self.cluster(embs)
+#         return {
+#             'embs': embs,
+#             # 'labels': labels,
+#             # 'dists': dists
+#         }
+        
+#     def forward(self, anchor, pos, neg):
+#         anchor = self.encode(anchor)
+#         pos = self.encode(pos)
+#         neg = self.encode(neg)
+        
+#         return {
+#             'anchor_embs': anchor['embs'],
+#             'pos_embs': pos['embs'],
+#             'neg_embs': neg['embs'],
+#         }
+    

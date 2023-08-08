@@ -109,6 +109,7 @@ class STExpressionLoggingCallback(pl.Callback):
 class ClusteringLoggingCallback(pl.Callback):
     def __init__(self, dl, slide_shape, cmap=None, n_clusters=20, tol=1.):
         self.embs = []
+        self.labels = []
         self.rc = []
         self.slide_idxs = []
         self.dl = dl
@@ -117,12 +118,13 @@ class ClusteringLoggingCallback(pl.Callback):
         self.tol = tol
 
         extended = sns.color_palette('tab20') + sns.color_palette('tab20b') + sns.color_palette('tab20c')
-        self.cmap = cmap if cmap is not None else extended
+        self.cmap = extended
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
-        self.embs.append(outputs['result']['anchor_embs'])
-        self.rc.append(batch['anchor_rc'])
-        self.slide_idxs.append(batch['anchor_slide_idx'])
+        self.embs.append(outputs['embs'])
+        self.labels.append(outputs['labels'])
+        self.rc.append(batch['rc'])
+        self.slide_idxs.append(batch['slide_idx'])
   
     def on_validation_epoch_end(self, trainer, pl_module):
         if len(self.embs) == len(self.dl):
@@ -134,7 +136,8 @@ class ClusteringLoggingCallback(pl.Callback):
                     X=embs, num_clusters=self.n_clusters, tol=self.tol,
                     distance='euclidean', device=embs.device
                 )
-            labels = cluster_ids_x.to(torch.long)
+            labels = cluster_ids_x
+            # labels = torch.concat(self.labels).clone().detach().cpu().to(torch.long)
 
             pool = torch.unique(slide_idxs)
             imgs = []
@@ -155,6 +158,7 @@ class ClusteringLoggingCallback(pl.Callback):
                 caption=[i for i in range(len(imgs))]
             )
         self.embs = []
+        self.labels = []
         self.rc = []
         self.slide_idxs = []
 
