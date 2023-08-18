@@ -1,4 +1,5 @@
 # package specific
+*.tif
 data/
 notebooks/lightning_logs/
 
