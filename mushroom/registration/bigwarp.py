@@ -7,6 +7,9 @@ from scipy import ndimage as ndi
 
 
 def read_bigwarp_warp_field(fp, downsample_scaler):
+    """
+    Read bigwarp 
+    """
     ddf = torch.tensor(tifffile.imread(fp))
     ddf = ddf[[1, 0]] # needs to be (h, w) in first dim, bigwarp exports (w, h, c)
 
@@ -131,7 +134,7 @@ def regenerate_adata(he, adata, ddf, phenocycler_pixels_per_micron=1.96049119060
     return new
 
 
-def register_adata(he, adata, ddf, phenocycler_pixels_per_micron=1.9604911906033102):
+def register_visium(he, adata, ddf, phenocycler_pixels_per_micron=1.9604911906033102):
     pix_per_micron = next(iter(
         adata.uns['spatial'].values()))['scalefactors']['spot_diameter_fullres'] / 65.
     scale = 1 / pix_per_micron * phenocycler_pixels_per_micron # bring to codex resolution
@@ -150,7 +153,7 @@ def register_adata(he, adata, ddf, phenocycler_pixels_per_micron=1.9604911906033
     return new
 
 
-def register_codex(channel_to_img, ddf):
+def register_multiplex(channel_to_img, ddf):
     warped_channel_to_img = {c:warp_image(img, ddf) for c, img in channel_to_img.items()}
     
     return warped_channel_to_img

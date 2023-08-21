@@ -1,7 +1,5 @@
 from setuptools import setup, find_packages
-from setuptools.command.install import install
 from os import path
-import subprocess
 
 here = path.abspath(path.dirname(__file__))
 
@@ -10,10 +8,10 @@ with open(path.join(here, 'README.md')) as f:
     long_description = f.read()
 
 setup(
-    # $ pip install multiplex-cluster
-    name='mushroom-cluster',
-    version='0.0.1',
-    description='A Python library for multiplex imaging analysis',
+    # $ pip install mushroom
+    name='mushroom',
+    version='0.0.2',
+    description='A Python library for clustering and analysis of multi-modal 3D serial section experiments.',
     long_description=long_description,
     long_description_content_type='text/markdown',
     url='https://github.com/dinglab/mushroom',
@@ -33,24 +31,21 @@ setup(
         'seaborn',
         'tifffile',
         'ome-types',
+        'imagecodecs>=2022.7.27',
         'scikit-image',
         'scikit-learn',
-        'imagecodecs',
         'torch',
         'torchvision',
         'pytorch-lightning',
-        'kmeans_pytorch',
-        'timm',
+        'vit-pytorch',
         'einops',
         'wandb',
-        'pyvista',
-        'alphashape'
+        'napari',
     ],
     include_package_data=True,
-
     entry_points={
         'console_scripts': [
-            'mushroom=mushroom.mushroom:main',
+ #           'mushroom=mushroom.mushroom:main',
         ],
     },
 )
