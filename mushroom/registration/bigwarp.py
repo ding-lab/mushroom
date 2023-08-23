@@ -11,11 +11,11 @@ def read_bigwarp_warp_field(fp, downsample_scaler):
     Read bigwarp 
     """
     ddf = torch.tensor(tifffile.imread(fp))
-    ddf = ddf[[1, 0]] # needs to be (h, w) in first dim, bigwarp exports (w, h, c)
+    ddf = ddf[[1, 0]] # needs to be (h, w, c), bigwarp exports (w, h, c)
 
     # rescale to original size
     scale = 1 / downsample_scaler
-    ddf = TF.resize(ddf, (int(ddf.shape[-2] * scale), int(ddf.shape[-1] * scale)))
+    ddf = TF.resize(ddf, (int(ddf.shape[-2] * scale), int(ddf.shape[-1] * scale)), antialias=False)
     ddf *= scale
 
     return ddf
@@ -64,7 +64,7 @@ def warp_pts(pts, ddf):
     """
     assumes 2d transform
     
-    pts - (n, 2) # 2 is h, w
+    pts - (n, 2) # 2 is height, width
     ddf - (2 h w) # first channel is h displacment, second channel is w displacement
     """
     if not isinstance(pts, torch.Tensor):
@@ -97,15 +97,19 @@ def warp_pts(pts, ddf):
     return warped, mask
 
 
-def regenerate_adata(he, adata, ddf, phenocycler_pixels_per_micron=1.9604911906033102):
+def register_visium(he, adata, ddf, target_pix_per_micron=1., moving_pix_per_micron=None):
     """
     he - (3, h, w)
     labeled - (1, h, w)
     """
+    if not isinstance(he, torch.Tensor):
+        he = torch.tensor(he)
     new = adata.copy()
-    pix_per_micron = next(iter(
-        adata.uns['spatial'].values()))['scalefactors']['spot_diameter_fullres'] / 65.
-    scale = 1 / pix_per_micron * phenocycler_pixels_per_micron # bring to codex resolution
+    if moving_pix_per_micron is None:
+        moving_pix_per_micron = next(iter(
+            adata.uns['spatial'].values()))['scalefactors']['spot_diameter_fullres'] / 65.
+    scale = target_pix_per_micron / moving_pix_per_micron # bring to target img resolution
+    he = register_he(he, ddf) # warped he is at target resolution
 
     d = next(iter(new.uns['spatial'].values()))
     scalefactors = d['scalefactors']
@@ -114,9 +118,9 @@ def regenerate_adata(he, adata, ddf, phenocycler_pixels_per_micron=1.96049119060
                   int(scalefactors['tissue_hires_scalef'] * he.shape[-1]))
     lowres_size = (int(scalefactors['tissue_lowres_scalef'] * he.shape[-2]),
                   int(scalefactors['tissue_lowres_scalef'] * he.shape[-1]))
-
-    hires = TF.resize(he, hires_size)
-    lowres = TF.resize(he, lowres_size)
+    
+    hires = TF.resize(he, hires_size, antialias=True)
+    lowres = TF.resize(he, lowres_size, antialias=True)
 
     d['images']['hires'] = rearrange(hires, 'c h w -> h w c').numpy()
     d['images']['lowres'] = rearrange(lowres, 'c h w -> h w c').numpy()
@@ -126,34 +130,17 @@ def regenerate_adata(he, adata, ddf, phenocycler_pixels_per_micron=1.96049119060
 
     new.obsm['spatial_original'] = new.obsm['spatial'].copy()
     x = (torch.tensor(new.obsm['spatial']) * scale).to(torch.long)
-    x = x[:, [1, 0]]
+    x = x[:, [1, 0]] # needs to be (h, w) instead of (w, h)
     transformed, mask = warp_pts(x, ddf)
     new = new[mask.numpy()]
     new.obsm['spatial'] = transformed[:, [1, 0]].numpy()
  
     return new
 
+def register_he(he, ddf):
+    return warp_image(he, ddf)
 
-def register_visium(he, adata, ddf, phenocycler_pixels_per_micron=1.9604911906033102):
-    pix_per_micron = next(iter(
-        adata.uns['spatial'].values()))['scalefactors']['spot_diameter_fullres'] / 65.
-    scale = 1 / pix_per_micron * phenocycler_pixels_per_micron # bring to codex resolution
-    target = (int(he.shape[-2] * scale), int(he.shape[-1] * scale))
-
-    he = TF.resize(he, target)
-
-    adata.uns['he_rescaled'] = rearrange(he, 'c h w -> h w c').numpy()
-    adata.obsm['he_rescaled_spatial'] = (adata.obsm['spatial'] * scale).astype(np.int32)
-
-    warped_he = warp_image(he, ddf)
-    adata.uns['he_rescaled_warped'] = rearrange(warped_he, 'c h w -> h w c').numpy()
-
-    new = regenerate_adata(warped_he, adata, ddf)
-
-    return new
-
-
-def register_multiplex(channel_to_img, ddf):
-    warped_channel_to_img = {c:warp_image(img, ddf) for c, img in channel_to_img.items()}
-    
-    return warped_channel_to_img
+def register_multiplex(data, ddf):
+    if isinstance(data, dict):
+        return {c:warp_image(img, ddf) for c, img in data.items()}
+    return warp_image(data, ddf)
