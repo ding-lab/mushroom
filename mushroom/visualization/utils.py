@@ -9,7 +9,7 @@ from einops import rearrange
 from mushroom.data.multiplex import extract_ome_tiff, make_pseudo
 
  
-def display_experiment(config, multiplex_cmap, gene='EPCAM', dtype_order=None):
+def display_sections(config, multiplex_cmap=None, gene='EPCAM', dtype_order=None):
     def rescale(x, scale=.1):
         if not isinstance(x, torch.Tensor):
             x = torch.tensor(x)
@@ -69,3 +69,17 @@ def display_experiment(config, multiplex_cmap, gene='EPCAM', dtype_order=None):
         ax.set_ylabel(dtype)
     for ax, sid in zip(axs[0, :], [item['id'] for item in config]):
         ax.set_title(sid)
+
+
+def display_labeled_as_rgb(labeled, cmap=None):
+    if isinstance(labeled, torch.Tensor):
+        labeled = labeled.numpy()
+    cmap = sns.color_palette() if cmap is None else cmap
+    labels = sorted(np.unique(labeled))
+    if len(cmap) < len(labels):
+        raise RuntimeError('cmap is too small')
+    new = np.zeros((labeled.shape[0], labeled.shape[1], 3))
+    for l in labels:
+        c = cmap[l]
+        new[labeled==l] = c
+    return new

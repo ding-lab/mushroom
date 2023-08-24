@@ -35,6 +35,7 @@ setup(
         'scikit-image',
         'scikit-learn',
         'torch',
+        'torchio',
         'torchvision',
         'pytorch-lightning',
         'vit-pytorch',

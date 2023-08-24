@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -5,6 +7,22 @@ from einops import repeat, rearrange
 from einops.layers.torch import Rearrange
 
 from vit_pytorch.vit import Transformer
+
+
+@dataclass
+class SAEargs:
+    size: int = 256
+    patch_size: int = 32
+    encoder_dim: int = 1024
+    encoder_depth: int = 6
+    heads: int = 8
+    mlp_dim: int = 2048
+    num_classes: int = 1000
+    decoder_dim: int = 512
+    decoder_depth: int = 6
+    decoder_dim_head: int = 64
+    triplet_scaler: float = 1.
+    recon_scaler: float = 1.
 
 
 class SAE(nn.Module):
@@ -37,13 +55,6 @@ class SAE(nn.Module):
         self.patch_to_emb = nn.Sequential(*encoder.to_patch_embedding[1:])
 
         pixel_values_per_patch = encoder.to_patch_embedding[2].weight.shape[-1]
-
-        self.vq = VectorQuantize(
-            dim = encoder_dim,
-            codebook_size = codebook_size,     # codebook size
-            decay = 0.8,             # the exponential moving average decay, lower means the dictionary will change faster
-            commitment_weight = 1.   # the weight on the commitment loss
-        )
 
         # decoder parameters
         self.decoder_dim = decoder_dim
@@ -81,13 +92,13 @@ class SAE(nn.Module):
 
         return encoded_tokens
     
-    def quantize(self, encoded_tokens):
-        # vector quantize
-        slide_token, patch_tokens = encoded_tokens[:, :1], encoded_tokens[:, 1:]
-        patch_tokens, indices, commit_loss = self.vq(patch_tokens) # quantized, indices, commit_loss
-        encoded_tokens = torch.cat((slide_token, patch_tokens), dim=1)
+    # def quantize(self, encoded_tokens):
+    #     # vector quantize
+    #     slide_token, patch_tokens = encoded_tokens[:, :1], encoded_tokens[:, 1:]
+    #     patch_tokens, indices, commit_loss = self.vq(patch_tokens)
+    #     encoded_tokens = torch.cat((slide_token, patch_tokens), dim=1)
 
-        return encoded_tokens, indices, commit_loss
+    #     return encoded_tokens, indices, commit_loss
     
     def decode(self, encoded_tokens):
         device = encoded_tokens.device
@@ -111,10 +122,7 @@ class SAE(nn.Module):
         outputs = []
         recon_loss = 0
         for img, slide in zip(imgs, slides):
-            encoded_tokens_prequantized = self.encode(img, slide)
-
-            # encoded_tokens, *_ = self.quantize(encoded_tokens_prequantized)
-            encoded_tokens = encoded_tokens_prequantized
+            encoded_tokens = self.encode(img, slide)
             
             decoded_tokens = self.decode(encoded_tokens)
 
@@ -125,7 +133,6 @@ class SAE(nn.Module):
             recon_loss += loss
 
             outputs.append({
-                'encoded_tokens_prequantized': encoded_tokens_prequantized,
                 'encoded_tokens': encoded_tokens,
                 'decoded_tokens': decoded_tokens,
                 'pred_pixel_values': pred_pixel_values,
