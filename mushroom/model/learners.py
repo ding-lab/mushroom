@@ -27,6 +27,7 @@ class SAELearner(object):
             num_workers=1, # number of workers to use in data loader
             sae_args=SAEargs(), # args for ViT
             device=None,
+            pct_expression=.02, # channels with % of spots expressing < will be removed
             ):
         self.config = config
         self.dtype = dtype
@@ -43,7 +44,7 @@ class SAELearner(object):
         logging.info(f'generating inputs for {self.dtype} tissue sections')
         if self.dtype == 'multiplex':
             learner_data = multiplex.get_learner_data(
-                self.config, self.scale, self.size,
+                self.config, self.scale, self.size, self.sae_args.patch_size,
                 channels=channels, channel_mapping=self.channel_mapping
             )
         elif self.dtype == 'he':
@@ -51,7 +52,7 @@ class SAELearner(object):
         elif self.dtype == 'visium':
             learner_data = visium.get_learner_data(
                 self.config, self.scale, self.size, self.sae_args.patch_size,
-                channels=channels, channel_mapping=self.channel_mapping
+                channels=channels, channel_mapping=self.channel_mapping, pct_expression=pct_expression,
             )
         else:
             raise RuntimeError(f'dtype must be one of the following: \
@@ -72,8 +73,8 @@ class SAELearner(object):
         )
 
         encoder = ViT(
-            image_size=self.sae_args.size,
-            patch_size=self.sae_args.patch_size,
+            image_size=self.train_transform.output_size[0],
+            patch_size=self.train_transform.output_patch_size,
             num_classes=self.sae_args.num_classes,
             dim=self.sae_args.encoder_dim,
             depth=self.sae_args.encoder_depth,
@@ -91,6 +92,7 @@ class SAELearner(object):
             triplet_scaler=self.sae_args.triplet_scaler,
             recon_scaler=self.sae_args.recon_scaler
         )
+
         self.sae = self.sae.to(self.device)
 
     def train(
@@ -141,7 +143,8 @@ class SAELearner(object):
         num_patches = self.size[0] // self.sae_args.patch_size
         embs = torch.zeros(
             n, num_patches, num_patches, self.sae.encoder.pos_embedding.shape[-1])
-        pred_patches = torch.zeros(n, len(self.channels), self.size[0], self.size[1])
+        # pred_patches = torch.zeros(n, len(self.channels), self.size[0], self.size[1])
+        pred_patches = torch.zeros(n, len(self.channels), self.train_transform.output_size[0], self.train_transform.output_size[1])
 
         bs = self.inference_dl.batch_size
         self.sae.eval()
@@ -149,7 +152,6 @@ class SAELearner(object):
             for i, b in enumerate(self.inference_dl):
                 x, section_idx = b['img'], b['section_idx']
                 x, section_idx = x.to(device), section_idx.to(device)
-                
                 encoded_tokens = self.sae.encode(x, section_idx)
                 decoded_tokens = self.sae.decode(encoded_tokens)
                 pred_pixel_values = self.sae.to_pixels(decoded_tokens[:, 1:])
@@ -159,14 +161,16 @@ class SAELearner(object):
                 pred_pixel_values = rearrange(
                     pred_pixel_values, 'b (h w) (p1 p2 c) -> b c (h p1) (w p2)',
                     h=num_patches, w=num_patches,
-                    p1=self.sae_args.patch_size, p2=self.sae_args.patch_size,
+                    p1=self.train_transform.output_patch_size, p2=self.train_transform.output_patch_size,
+                    # p1=self.sae_args.patch_size, p2=self.sae_args.patch_size,
                     c=len(self.channels))
                 
                 embs[i * bs:(i + 1) * bs] = encoded_tokens.cpu().detach()
                 pred_patches[i * bs:(i + 1) * bs] = pred_pixel_values.cpu().detach()
         recon_imgs = torch.stack(
-            [self.inference_ds.section_from_tiles(pred_patches, i)
-             for i in range(len(self.inference_ds.sections))]
+            [self.inference_ds.section_from_tiles(
+                pred_patches, i, size=(self.train_transform.output_size[0], self.train_transform.output_size[1])
+            ) for i in range(len(self.inference_ds.sections))]
         )
         recon_embs = torch.stack(
             [self.inference_ds.section_from_tiles(

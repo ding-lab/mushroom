@@ -11,6 +11,7 @@ import yaml
 from mushroom.model.sae import SAEargs
 from mushroom.model.learners import SAELearner
 from mushroom.clustering import EmbeddingClusterer, ClusterArgs
+from mushroom.data.visium import format_expression
 
 
 class Mushroom(object):
@@ -36,11 +37,19 @@ class Mushroom(object):
 
         self.learner = self.initialize_learner()
 
+        # print(self.learner.inference_ds.section_to_tiles[s].shape)
         # make a groundtruth reconstruction for original images
         self.true_imgs = torch.stack(
             [self.learner.inference_ds.image_from_tiles(self.learner.inference_ds.section_to_tiles[s])
             for s in self.learner.inference_ds.sections]
         )
+
+        if self.dtype in ['visium']:
+            self.true_imgs = torch.cat(
+                [format_expression(
+                    img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
+                ) for sid, img in zip(self.section_ids, self.true_imgs)]
+            )
 
         self.clusterer = self.initialize_clusterer()
 
@@ -62,8 +71,10 @@ class Mushroom(object):
         )
     
     def _get_section_imgs(self, args):
-        emb_size = int(self.true_imgs.shape[-2] / self.learner.sae_args.patch_size)
+        # emb_size = int(self.true_imgs.shape[-2] / self.learner.sae_args.patch_size)
+        emb_size = int(self.true_imgs.shape[-2] / self.learner.train_transform.output_patch_size)
         section_imgs = TF.resize(self.true_imgs, (emb_size, emb_size), antialias=True)
+
         if args.background_channels is None and args.mask_background:
             logging.info('no background channel detected, defaulting to mean of all channels')
             section_imgs = section_imgs.mean(1)
@@ -72,6 +83,7 @@ class Mushroom(object):
             section_imgs = section_imgs[:, idxs].mean(1)
         else:
             section_imgs = None
+
         return section_imgs
 
     def initialize_learner(self):
