@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Iterable
+
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -11,10 +14,22 @@ from torchio.transforms import Resize
 
 from mushroom.visualization.utils import display_labeled_as_rgb
 
+@dataclass
+class ClusterArgs:
+    num_clusters: int = 20
+    mask_background: bool = True
+    add_background_cluster: bool =True
+    margin: float = .05
+    background_channels: Iterable = None
+    section_masks: torch.Tensor = None
+    span_all_sections: bool = True
+    centroids: Iterable = None
 
 class EmbeddingClusterer(object):
-    def __init__(self, n_clusters=20, section_imgs=None, section_masks=None, margin=.05):
-        self.kmeans = KMeans(n_clusters=n_clusters, n_init='auto')
+    def __init__(self, n_clusters=20, section_imgs=None, section_masks=None, margin=.05, init='k-means++'):
+        self.kmeans = KMeans(n_clusters=n_clusters, n_init='auto', init=init)
+        if isinstance(init, np.ndarray):
+            self.kmeans.cluster_centers_ = init
 
         self.section_masks = self.autogenerate_section_masks(
             section_imgs, margin=margin) if section_imgs is not None else section_masks
@@ -64,6 +79,21 @@ class EmbeddingClusterer(object):
         cluster_ids = rearrange(cluster_ids, '(n h w) -> n h w', n=n, h=h, w=w)
 
         if add_background_cluster and mask_background:
+            cluster_ids[~self.section_masks] = cluster_ids.max() + 1
+            dists[~self.section_masks] = dists.amax((0, 1, 2))
+
+        return dists, cluster_ids
+    
+    def transform(self, recon_embs, add_background_cluster=True):
+        n, h, w = recon_embs.shape[0], recon_embs.shape[2], recon_embs.shape[3]
+
+        dists = self.kmeans.transform(rearrange(recon_embs, 'n c h w -> (n h w) c').numpy())
+        cluster_ids = torch.tensor(dists.argmin(1))
+
+        dists = rearrange(torch.tensor(dists), '(n h w) d -> n h w d', n=n, h=h, w=w)
+        cluster_ids = rearrange(cluster_ids, '(n h w) -> n h w', n=n, h=h, w=w)
+
+        if add_background_cluster:
             cluster_ids[~self.section_masks] = cluster_ids.max() + 1
             dists[~self.section_masks] = dists.amax((0, 1, 2))
 
