@@ -1,6 +1,6 @@
 # package specific
 *.tif
-data/
+/data/
 notebooks/lightning_logs/
 
 # Byte-compiled / optimized / DLL files
