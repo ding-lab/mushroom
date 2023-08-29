@@ -181,7 +181,7 @@ def get_learner_data(config, scale, size, patch_size, channels=None, channel_map
 
 class MultiplexTrainingTransform(object):
     def __init__(self, size=(256, 256), patch_size=32, normalize=None):
-        self.output_size = size[0]
+        self.output_size = size
         self.output_patch_size = patch_size
         self.transforms = Compose([
             RandomCrop(size, padding_mode='reflect'),
