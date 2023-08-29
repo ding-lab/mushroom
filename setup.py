@@ -41,8 +41,12 @@ setup(
         'vit-pytorch',
         'einops',
         'wandb',
-        'napari',
     ],
+    extras_require={
+        'viz': [
+            'napari[all]',
+        ],
+    },
     include_package_data=True,
     entry_points={
         'console_scripts': [
