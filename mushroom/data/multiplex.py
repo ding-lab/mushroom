@@ -19,6 +19,12 @@ from mushroom.data.inference import InferenceTransform, InferenceSectionDataset
 from mushroom.data.utils import LearnerData
 
 
+def pixels_per_micron(filepath):
+    tif = TiffFile(filepath)
+    ome = from_xml(tif.ome_metadata)
+    im = ome.images[0]
+    return im.pixels.physical_size_x
+
 def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict'):
     tif = TiffFile(filepath)
     ome = from_xml(tif.ome_metadata)
@@ -50,6 +56,12 @@ def get_ome_tiff_channels(filepath):
     ome = from_xml(tif.ome_metadata)
     im = ome.images[0]
     return [c.name for c in im.pixels.channels]
+
+def get_size(filepath):
+    tif = TiffFile(filepath)
+    ome = from_xml(tif.ome_metadata)
+    im = ome.images[0]
+    return (im.pixels.size_c, im.pixels.size_y, im.pixels.size_x)
 
 
 def write_basic_ome_tiff(filepath, data, channels, pix_per_micron=1.):

@@ -13,6 +13,20 @@ from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, Ran
 from mushroom.data.utils import LearnerData
 from mushroom.data.inference import InferenceSectionDataset
 
+def pixels_per_micron(adata):
+    if isinstance(adata, str):
+        adata = adata_from_visium(adata)
+    scalefactors = next(iter(adata.uns['spatial'].values()))['scalefactors']
+    return scalefactors['spot_diameter_fullres'] / 65. # each spot is 65 microns wide
+
+def get_fullres_size(adata):
+    d = next(iter(adata.uns['spatial'].values()))
+    img = d['images']['hires']
+    fullres_size = (
+        img.shape[0] / d['scalefactors']['tissue_hires_scalef'],
+        img.shape[1] / d['scalefactors']['tissue_hires_scalef']
+    )
+    return fullres_size
 
 def adata_from_visium(filepath):
     ext = filepath.split('.')[-1]
@@ -112,12 +126,7 @@ def get_section_to_image(
 
         # create labeled image
         if fullres_size is None and i==0:
-            d = next(iter(adata.uns['spatial'].values()))
-            img = d['images']['hires']
-            fullres_size = (
-                img.shape[0] / d['scalefactors']['tissue_hires_scalef'],
-                img.shape[1] / d['scalefactors']['tissue_hires_scalef']
-            )
+            fullres_size = get_fullres_size(adata)
     
         scaled_size = (
             int(fullres_size[0] * scale),
