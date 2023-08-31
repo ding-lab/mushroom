@@ -25,7 +25,7 @@ def pixels_per_micron(filepath):
     im = ome.images[0]
     return im.pixels.physical_size_x
 
-def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict'):
+def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict', scale=None):
     tif = TiffFile(filepath)
     ome = from_xml(tif.ome_metadata)
     im = ome.images[0]
@@ -36,6 +36,12 @@ def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict'
         if channels is None or c.name in channels:
             img = p.asarray()
             d[c.name] = img
+
+            if scale is not None:
+                img = torch.tensor(img).unsqueeze(0)
+                target_size = [int(x * scale) for x in img.shape[-2:]]
+                img = TF.resize(img, size=target_size, antialias=True).squeeze()
+
             imgs.append(img)
             img_channels.append(c.name)
 
@@ -128,13 +134,20 @@ def get_section_to_image(sid_to_filepaths, channels, channel_mapping=None, scale
 
     section_to_img = {}
     for sid, filepath in sid_to_filepaths.items():
-        channel_to_imgs = extract_ome_tiff(filepath)
-        channel_to_imgs = {channel_mapping.get(c, c):img for c, img in channel_to_imgs.items()}
-        channel_to_imgs = {c:img for c, img in channel_to_imgs.items() if c in channels}
-        imgs = torch.stack([torch.tensor(channel_to_imgs[c]) for c in channels])
-        imgs = TF.resize(
-            imgs, (int(scale * imgs.shape[-2]), int(scale * imgs.shape[-1])), antialias=True
-        )
+        # print('here')
+        # channel_to_imgs = extract_ome_tiff(filepath)
+        # channel_to_imgs = {channel_mapping.get(c, c):img for c, img in channel_to_imgs.items()}
+        # channel_to_imgs = {c:img for c, img in channel_to_imgs.items() if c in channels}
+        # imgs = torch.stack([torch.tensor(channel_to_imgs[c]) for c in channels])
+        cs, imgs = extract_ome_tiff(filepath, as_dict=False, scale=scale)
+        cs = [channel_mapping.get(c, c) for c in cs]
+        idxs = [i for i, c in enumerate(cs) if c in channels]
+        imgs = imgs[idxs]
+        imgs = torch.tensor(imgs)
+        
+        # imgs = TF.resize(
+        #     imgs, (int(scale * imgs.shape[-2]), int(scale * imgs.shape[-1])), antialias=True
+        # )
         imgs = imgs.to(torch.float32)
         
         section_to_img[sid] = imgs
