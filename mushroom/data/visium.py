@@ -28,7 +28,7 @@ def get_fullres_size(adata):
     )
     return fullres_size
 
-def adata_from_visium(filepath):
+def adata_from_visium(filepath, normalize=False):
     ext = filepath.split('.')[-1]
     if ext == 'h5ad':
         adata = sc.read_h5ad(filepath)
@@ -43,6 +43,10 @@ def adata_from_visium(filepath):
     # if sparse, then convert
     if 'sparse' in str(type(adata.X)).lower():
         adata.X = adata.X.toarray()
+
+    if normalize:
+        sc.pp.normalize_total(adata, target_sum=1e4)
+        sc.pp.log1p(adata)
     
     return adata
 

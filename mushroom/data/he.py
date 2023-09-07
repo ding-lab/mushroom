@@ -1,3 +1,4 @@
+import tifffile
 from tifffile import TiffFile
 
 def get_size(filepath):
@@ -5,4 +6,11 @@ def get_size(filepath):
     p = next(iter(tif.pages))
     return p.shape
 
-def 
+def read_he(filepath):
+    ext = filepath.split('.')[-1]
+    if ext == 'tif':
+        return tifffile.imread(filepath)
+    elif ext == 'svs':
+        raise RuntimeError('.svs not implemented yet')
+    else:
+        raise RuntimeError(f'Extension {ext} not supported for H&E')

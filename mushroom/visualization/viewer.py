@@ -1,10 +1,13 @@
 import os
+import shutil
 
 import matplotlib.pyplot as plt
 import numpy as np
 import scanpy as sc
 import tifffile
 import torch
+import torchio
+import torchvision
 import torchvision.transforms.functional as TF
 from einops import rearrange
 from PIL import Image
@@ -13,8 +16,9 @@ from scipy.interpolate import interp1d
 import mushroom.data.multiplex as multiplex
 import mushroom.data.visium as visium
 import mushroom.data.he as he
+from mushroom.visualization.napari import NapariImageArgs
 
-def resize(img, scale=None, size=None, antialias=True):
+def resize(img, scale=None, size=None, antialias=True, interpolation=torchvision.transforms.InterpolationMode.BILINEAR):
     """
     img = (..., h, w)
     scale = float
@@ -28,7 +32,7 @@ def resize(img, scale=None, size=None, antialias=True):
     if scale is not None:
         size = (int(img.shape[-2] * scale), int(img.shape[-1] * scale))
     
-    img = TF.resize(img, size, antialias=antialias)
+    img = TF.resize(img, size, antialias=antialias, interpolation=interpolation)
 
     if not is_tensor:
         img = img.numpy()
@@ -94,13 +98,13 @@ class Planes(object):
         pass
 
 class VisiumPlanes(Planes):
-    def __init__(self, section_to_data, fullres_size, scaled_size, scale):
+    def __init__(self, section_to_data, fullres_size, scaled_size, scale, normalize=True):
         super().__init__(section_to_data, fullres_size, scaled_size, scale)
 
         self.section_to_adata = self.section_to_data
         if isinstance(next(iter(self.section_to_adata.values())), str):
             self.section_to_adata = {
-                k:visium.adata_from_visium(v) for k, v in self.section_to_adata.items()
+                k:visium.adata_from_visium(v, normalize=normalize) for k, v in self.section_to_adata.items()
             }
         
         for sid, adata in self.section_to_adata.items():
@@ -135,9 +139,32 @@ class VisiumPlanes(Planes):
         ax.axis('off')
         ax.set_title('')
         plt.savefig(fp, bbox_inches='tight', pad_inches=0., dpi=300)
+        plt.close()
         img = np.asarray(Image.open(fp))
+        img = img[..., :-1] # (h, w, c)
+        img = rearrange(img, 'h w c -> c h w')
 
-        return img[..., :-1] # (h, w, c)
+        os.remove(fp)
+
+        return img
+    
+    def get_spots(self, section_id, marker=None):
+        adata = self.section_to_adata[section_id]
+        if marker is None:
+            marker = adata.var.index.to_list()[0]
+
+        X = adata[:, marker].X
+        if 'sparse' in str(type(X)).lower():
+            X = X.toarray()
+        spots = [{'x': int(x), 'y':int(y), 'value': val}
+                 for (x, y), val in zip(adata.obsm['spatial_viz'] * self.scale, X[:, 0])]
+        
+        return spots
+    
+    def get_spots_img_shape(self, section_id):
+        adata = self.section_to_adata[section_id]
+        d = next(iter(adata.uns['spatial'].values()))
+        return d['images']['vizres'].shape
     
 
 class MultiplexPlanes(Planes):
@@ -151,18 +178,39 @@ class MultiplexPlanes(Planes):
         self.section_to_channels = {}
         for sid, filepath in self.section_to_data.items():
             channels = multiplex.get_ome_tiff_channels(filepath)
+            channels = [channel_mapping.get(c, c) for c in channels]
             img = next(iter(multiplex.get_section_to_image(
                 {sid:filepath}, channels, channel_mapping=channel_mapping, scale=self.scale
             ).values()))
             img = TF.pad(img, padding=self.border).numpy()
             self.section_to_img[sid] = img
-            self.section_to_channels = [channel_mapping.get(c, c) for c in channels]
+            self.section_to_channels[sid] = [channel_mapping.get(c, c) for c in channels]
     
-    def get_image(self, section_id):
-        return self.section_to_img[section_id]
+    def get_image(self, section_id, marker=None):
+        if marker is None:
+            return self.section_to_img[section_id]
+        channels = self.section_to_channels[section_id]
+        return np.expand_dims(self.section_to_img[section_id][channels.index(marker)], 0)
     
     def get_channels(self, section_id):
         return self.section_to_channels[section_id]
+    
+
+class HEPlanes(Planes):
+    def __init__(self, section_to_data, fullres_size, scaled_size, scale):
+        super().__init__(section_to_data, fullres_size, scaled_size, scale)
+
+        self.section_to_img = {}
+        for sid, filepath in self.section_to_data.items():
+            img = he.read_he(filepath)
+            img = torch.tensor(rearrange(img, 'h w c -> c h w'))
+            img_scaled_nopad = resize(img, scale=self.scale)
+            img_scaled = TF.pad(img_scaled_nopad, padding=self.border)
+            self.section_to_img[sid] = img_scaled.numpy()
+    
+    def get_image(self, section_id):
+        return self.section_to_img[section_id]
+
 
 class MushroomViewer(object):
     def __init__(self, config, output_data, downsample=1., pixels_per_micron=None, microns_per_section=5):
@@ -184,6 +232,8 @@ class MushroomViewer(object):
         m = interp1d([0, self.initial_positions.max()], [0, self.downsampled_shape[-1]])
         self.positions = np.asarray([m(x) for x in self.initial_positions]).astype(int)
 
+        self.volume, self.cluster_ids = self.parse_output_data(output_data, self.downsampled_shape) # d, z, y, x
+
         self.dtype_mapping = {}
         for entry in config['sections']:
             for d in entry['data']:
@@ -203,4 +253,65 @@ class MushroomViewer(object):
                     channel_mapping=config['learner_kwargs']['channel_mapping']
                 )
             if dtype == 'he':
-                pass
+                self.dtype_to_planes[dtype] = HEPlanes(
+                    section_to_data, self.fullres_size, self.scaled_size, self.scale
+                )
+    
+    def parse_output_data(self, output_data, downsampled_shape):
+        target_size = (downsampled_shape[-1], downsampled_shape[-2])
+        transform = torchio.transforms.Resize(downsampled_shape)
+
+        if isinstance(output_data, str):
+            output_data = torch.load(output_data)
+
+        volume = rearrange(output_data['cluster_distance_volume'], 'z y x d -> d x y z')
+        volume = transform(volume)
+        volume = rearrange(volume, 'd x y z -> d z y x')
+        
+        cluster_ids = output_data['cluster_ids']
+
+        return volume, cluster_ids
+    
+    def get_sections(self, dtype=None, dtype_to_marker=None):
+        if dtype_to_marker is None:
+            dtype_to_marker = {}
+        napari_args_list = []
+        for dtype, planes in self.dtype_to_planes.items():
+            if dtype is None or dtype==dtype:
+                for section_id in planes.section_to_data.keys():
+                    markers = dtype_to_marker.get(dtype, [None])
+                    if markers[0] is None and dtype == 'multiplex':
+                            markers = planes.get_channels(section_id)
+                    for marker in markers:
+                        img, channels, spots = None, None, None
+                        if dtype == 'visium':
+                            img = planes.get_image(section_id, marker=marker)
+                            img = np.asarray(TF.rgb_to_grayscale(torch.tensor(img)))
+                            spots = planes.get_spots(section_id, marker)
+                            spot_img_shape = planes.get_spots_img_shape(section_id)
+                            sf = self.volume.shape[-1] / spot_img_shape[1]
+                            channels = [marker]
+                        if dtype == 'multiplex':
+                            img = planes.get_image(section_id, marker=marker)
+                            channels = [marker]
+                            sf = self.volume.shape[-1] / img.shape[-1]
+                        if dtype == 'he':
+                            img = planes.get_image(section_id)
+                            img = np.asarray(TF.rgb_to_grayscale(torch.tensor(img)))
+                            sf = self.volume.shape[-1] / img.shape[-1]
+                        
+                        napari_args_list.append(
+                            NapariImageArgs(
+                                name=f'{dtype}_{section_id}',
+                                position=self.positions[self.section_ids.index(section_id)],
+                                dtype=dtype,
+                                scale_factor=sf,
+                                img=img,
+                                channels=channels,
+                                spots=spots,
+                            )
+                        )
+
+        return napari_args_list
+            
+        
