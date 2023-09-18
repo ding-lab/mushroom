@@ -28,6 +28,7 @@ setup(
     python_requires='>=3.8',
     install_requires=[
         'scanpy',
+        'squidpy',
         'seaborn',
         'tifffile',
         'ome-types',
@@ -41,6 +42,7 @@ setup(
         'vit-pytorch',
         'einops',
         'wandb',
+        'timm',
     ],
     extras_require={
         'viz': [

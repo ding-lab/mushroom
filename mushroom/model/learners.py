@@ -1,5 +1,6 @@
 import logging
 import os
+import warnings
 
 import torch
 from einops import rearrange, repeat
@@ -12,7 +13,8 @@ import mushroom.data.visium as visium
 from mushroom.model.sae import SAE, SAEargs
 
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 
 class SAELearner(object):
@@ -52,7 +54,7 @@ class SAELearner(object):
         elif self.dtype == 'visium':
             learner_data = visium.get_learner_data(
                 self.config, self.scale, self.size, self.sae_args.patch_size,
-                channels=channels, channel_mapping=self.channel_mapping, pct_expression=pct_expression,
+                use_rgb=self.sae_args.sidecar_rgb, channels=channels, channel_mapping=self.channel_mapping, pct_expression=pct_expression,
             )
         else:
             raise RuntimeError(f'dtype must be one of the following: \
@@ -85,12 +87,14 @@ class SAELearner(object):
 
         self.sae = SAE(
             encoder=encoder,
+            decoder_type='zinb' if self.dtype in ['visium'] else 'pixels',
             decoder_dim=self.sae_args.decoder_dim,
             n_slides=len(self.section_to_img),
             decoder_depth=self.sae_args.decoder_depth,
             decoder_dim_head=self.sae_args.decoder_dim_head,
             triplet_scaler=self.sae_args.triplet_scaler,
-            recon_scaler=self.sae_args.recon_scaler
+            recon_scaler=self.sae_args.recon_scaler,
+            sidecar_rgb=self.sae_args.sidecar_rgb
         )
 
         self.sae = self.sae.to(self.device)
@@ -113,13 +117,23 @@ class SAELearner(object):
             img_x = torch.stack((b['anchor_img'], b['pos_img'], b['neg_img']))
             section_x = torch.stack((b['anchor_idx'], b['pos_idx'], b['neg_idx']))
             img_x, section_x = img_x.to(device), section_x.to(device)
-            losses, outputs = self.sae(img_x, section_x)
+
+            print(img_x.shape, section_x.shape)
+
+            if self.dtype in ['visium']:
+                img_raw_x = torch.stack((b['anchor_img_raw'], b['pos_img_raw'], b['neg_img_raw']))
+                rgb = torch.stack((b['anchor_rgb'], b['pos_rgb'], b['neg_rgb']))
+                img_raw_x, rgb = img_raw_x.to(device), rgb.to(device)
+                losses, outputs = self.sae(img_x, section_x, imgs_raw=img_raw_x, rgb=rgb)
+            else:
+                losses, outputs = self.sae(img_x, section_x)
             loss = losses['overall_loss']
             loss.backward()
             opt.step()
 
             if i % log_every == 0:
                 logging.info(f'iteration {i}: {losses}')
+                # print(f'iteration {i}: {losses}')
 
             if i % save_every == 0:
                 fp = os.path.join(save_dir, f'{i}iter.pt')
@@ -152,9 +166,13 @@ class SAELearner(object):
             for i, b in enumerate(self.inference_dl):
                 x, section_idx = b['img'], b['section_idx']
                 x, section_idx = x.to(device), section_idx.to(device)
-                encoded_tokens = self.sae.encode(x, section_idx)
+                rgb = b['rgb'].to(device) if self.dtype in ['visium'] else None
+                encoded_tokens = self.sae.encode(x, section_idx, rgb=rgb)
                 decoded_tokens = self.sae.decode(encoded_tokens)
                 pred_pixel_values = self.sae.to_pixels(decoded_tokens[:, 1:])
+                if self.dtype in ['visium']:
+                    pred_pixel_values = pred_pixel_values['exp']
+                print(pred_pixel_values.shape)
 
                 encoded_tokens = rearrange(encoded_tokens[:, 1:], 'b (h w) d -> b h w d',
                                         h=num_patches, w=num_patches)
@@ -167,11 +185,13 @@ class SAELearner(object):
                 
                 embs[i * bs:(i + 1) * bs] = encoded_tokens.cpu().detach()
                 pred_patches[i * bs:(i + 1) * bs] = pred_pixel_values.cpu().detach()
+        print(pred_patches.shape)
         recon_imgs = torch.stack(
             [self.inference_ds.section_from_tiles(
                 pred_patches, i, size=(self.train_transform.output_size[0], self.train_transform.output_size[1])
             ) for i in range(len(self.inference_ds.sections))]
         )
+        print(recon_imgs.shape)
         recon_embs = torch.stack(
             [self.inference_ds.section_from_tiles(
                 rearrange(embs, 'n h w c -> n c h w'),

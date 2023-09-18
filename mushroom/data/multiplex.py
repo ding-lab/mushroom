@@ -180,6 +180,7 @@ def get_learner_data(config, scale, size, patch_size, channels=None, channel_map
         [x.std(dim=(-2, -1)).unsqueeze(0) for x in section_to_img.values()]
     ).mean(0)
     normalize = Normalize(means, stds)
+
     train_transform = MultiplexTrainingTransform(size=size, patch_size=patch_size, normalize=normalize)
     inference_transform = InferenceTransform(normalize)
 
@@ -210,8 +211,8 @@ class MultiplexTrainingTransform(object):
         self.output_patch_size = patch_size
         self.transforms = Compose([
             RandomCrop(size, padding_mode='reflect'),
-            RandomHorizontalFlip(),
-            RandomVerticalFlip(),
+            # RandomHorizontalFlip(),
+            # RandomVerticalFlip(),
             normalize if normalize is not None else nn.Identity()
         ])
 

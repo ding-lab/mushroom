@@ -50,10 +50,10 @@ class Mushroom(object):
                     img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
                 ) for sid, img in zip(self.section_ids, self.true_imgs)]
             )
-
+            
+        self.recon_embs, self.recon_imgs = None, None
         self.clusterer = self.initialize_clusterer()
 
-        self.recon_embs, self.recon_imgs = None, None
         self.dists, self.cluster_ids, self.dists_volume = None, None, None
 
     @staticmethod
@@ -71,9 +71,12 @@ class Mushroom(object):
         )
     
     def _get_section_imgs(self, args):
-        # emb_size = int(self.true_imgs.shape[-2] / self.learner.sae_args.patch_size)
-        emb_size = int(self.true_imgs.shape[-2] / self.learner.train_transform.output_patch_size)
-        section_imgs = TF.resize(self.true_imgs, (emb_size, emb_size), antialias=True)
+        if self.recon_imgs is None:
+            emb_size = int(self.true_imgs.shape[-2] / self.learner.train_transform.output_patch_size)
+            section_imgs = TF.resize(self.true_imgs, (emb_size, emb_size), antialias=True)
+        else:
+            emb_size = int(self.recon_imgs.shape[-2] / self.learner.train_transform.output_patch_size)
+            section_imgs = TF.resize(self.recon_imgs, (emb_size, emb_size), antialias=True)
 
         if args.background_channels is None and args.mask_background:
             logging.info('no background channel detected, defaulting to mean of all channels')
