@@ -49,51 +49,81 @@ def adata_from_visium(filepath, normalize=False):
         adata.X = adata.X.toarray()
 
     if normalize:
-        sc.pp.normalize_total(adata, target_sum=1e4)
+        # sc.pp.normalize_total(adata, target_sum=1e4)
         sc.pp.log1p(adata)
     
     return adata
 
 
-def format_expression(labeled, adata, patch_size, agg_method='mean', reduc_method='exp', n_comp=50):
-    pad_h, pad_w = patch_size - labeled.shape[-2] % patch_size, patch_size - labeled.shape[-1] % patch_size
-    # left, top, right and bottom
-    labeled = TF.pad(labeled, [pad_w // 2, pad_h // 2, pad_w // 2 + pad_w % 2, pad_h // 2 + pad_h % 2])
+# def format_expression(labeled, adata, patch_size, agg_method='mean', reduc_method='exp', n_comp=50, pad=False):
+#     if pad:
+#         pad_h, pad_w = patch_size - labeled.shape[-2] % patch_size, patch_size - labeled.shape[-1] % patch_size
+#         # left, top, right and bottom
+#         labeled = TF.pad(labeled, [pad_w // 2, pad_h // 2, pad_w // 2 + pad_w % 2, pad_h // 2 + pad_h % 2])
     
-    labeled = labeled.squeeze(0)
+#     labeled = labeled.squeeze(0)
     
-    tile = labeled.unfold(-2, patch_size, patch_size)
-    tile = tile.unfold(-2, patch_size, patch_size)
-    tile = rearrange(tile, 'h w h1 w1 -> h w (h1 w1)')
-    x = torch.unique(tile, dim=-1)
+#     tile = labeled.unfold(-2, patch_size, patch_size)
+#     tile = tile.unfold(-2, patch_size, patch_size)
+#     tile = rearrange(tile, 'h w h1 w1 -> h w (h1 w1)')
+#     x = torch.unique(tile, dim=-1)
 
-    exp = torch.zeros(x.shape[0], x.shape[1], adata.shape[1], dtype=torch.float32)
-    l2b = adata.uns['label_to_barcode']
-    for i in range(x.shape[0]):
-        for j in range(x.shape[1]):
-            labels = x[i, j]
-            labels = labels[labels!=0]
-            if len(labels):
-                barcodes = [l2b[l.item()] for l in labels]
+#     exp = torch.zeros(x.shape[0], x.shape[1], adata.shape[1], dtype=torch.float32)
+#     l2b = adata.uns['label_to_barcode']
+#     for i in range(x.shape[0]):
+#         for j in range(x.shape[1]):
+#             labels = x[i, j]
+#             labels = labels[labels!=0]
+#             if len(labels):
+#                 barcodes = [l2b[l.item()] for l in labels]
 
-                if agg_method == 'mean':
+#                 if agg_method == 'mean':
+#                     exp[i, j] = torch.tensor(adata[barcodes].X.mean(0))
+#                 elif agg_method == 'sum':
+#                     exp[i, j] = torch.tensor(adata[barcodes].X.sum(0))
+#                 else:
+#                     raise RuntimeError(f'{agg_method} is not a valid method')
+#     exp = rearrange(exp, 'h w c -> c h w')
+    
+#     if reduc_method == 'pca':
+#         pca = PCA(n_components=n_comp)
+#         x = rearrange(exp, 'c h w -> (h w) c').numpy()
+#         x = pca.fit_transform(x)
+#         x = rearrange(x, '(h w) c -> c h w', h=exp.shape[-2], w=exp.shape[-1])
+#         x = torch.tensor(x)
+#     else:
+#         x = exp
+
+#     return x
+
+def format_expression(tiles, adatas, patch_size):
+    # add batch dim if there is none
+    if len(tiles.shape) == 2:
+        tiles = tiles.unsqueeze(0)
+    if isinstance(adatas, anndata.AnnData):
+        adatas = [adatas]
+    
+    exp_imgs = []
+    for tile, adata in zip(tiles, adatas):
+        # tile = rearrange(tile, '(ph h) (pw w) -> h w (ph pw)', ph=patch_size, pw=patch_size)
+        tile = tile.unfold(-2, patch_size, patch_size)
+        tile = tile.unfold(-2, patch_size, patch_size)
+        tile = rearrange(tile, 'h w h1 w1 -> h w (h1 w1)')
+        x = torch.unique(tile, dim=-1)
+
+        exp = torch.zeros(x.shape[0], x.shape[1], adata.shape[1], dtype=torch.float32)
+        l2b = adata.uns['label_to_barcode']
+        for i in range(x.shape[0]):
+            for j in range(x.shape[1]):
+                labels = x[i, j]
+                labels = labels[labels!=0]
+                if len(labels):
+                    barcodes = [l2b[l.item()] for l in labels]
                     exp[i, j] = torch.tensor(adata[barcodes].X.mean(0))
-                elif agg_method == 'sum':
-                    exp[i, j] = torch.tensor(adata[barcodes].X.sum(0))
-                else:
-                    raise RuntimeError(f'{agg_method} is not a valid method')
-    exp = rearrange(exp, 'h w c -> c h w')
+        exp = rearrange(exp, 'h w c -> c h w')
+        exp_imgs.append(exp)
     
-    if reduc_method == 'pca':
-        pca = PCA(n_components=n_comp)
-        x = rearrange(exp, 'c h w -> (h w) c').numpy()
-        x = pca.fit_transform(x)
-        x = rearrange(x, '(h w) c -> c h w', h=exp.shape[-2], w=exp.shape[-1])
-        x = torch.tensor(x)
-    else:
-        x = exp
-
-    return x
+    return torch.stack(exp_imgs).squeeze(0)
 
 
 def get_common_channels(filepaths, channel_mapping=None, pct_expression=.02):
@@ -122,13 +152,13 @@ def get_section_to_image(
         patch_size=1,
         channel_mapping=None,
         scale=.1,
-        log=True,
+        # log=True,
         fullres_size=None
     ):
     if channel_mapping is None:
         channel_mapping = {}
 
-    section_to_img, section_to_rgb = {}, {}
+    section_to_img = {}
     for i, (sid, adata) in enumerate(section_to_adata.items()):
         # filter genes/channels
         adata = adata[:, channels]
@@ -140,9 +170,9 @@ def get_section_to_image(
         adata.uns['label_to_barcode'] = {i+1:x for i, x in enumerate(adata.obs.index)}
         adata.uns['barcode_to_label'] = {v:k for k, v in adata.uns['label_to_barcode'].items()}
 
-        # logp1
-        if log:
-            sc.pp.log1p(adata)
+        # # logp1
+        # if log:
+        #     sc.pp.log1p(adata)
 
         # create labeled image
         if fullres_size is None and i==0:
@@ -192,12 +222,13 @@ def get_learner_data(
         section_to_adata, channels, patch_size=patch_size, channel_mapping=channel_mapping, scale=scale, fullres_size=fullres_size
     )
 
-    means = torch.cat(
-        [x.mean(dim=(-2, -1)).unsqueeze(0) for x in section_to_img.values()]
-    ).mean(0)
-    stds = torch.cat(
-        [x.std(dim=(-2, -1)).unsqueeze(0) for x in section_to_img.values()]
-    ).mean(0)
+    # TODO: find a cleaner way to do this, is long because trying to avoid explicit sparse matrix conversion of .X
+    means = np.asarray(np.vstack(
+        [a.X.mean(0) for a in section_to_adata.values()]
+    ).mean(0)).squeeze()
+    stds = np.asarray(np.vstack(
+        [a.X.std(0) for a in section_to_adata.values()]
+    ).mean(0)).squeeze()
     normalize = Normalize(means, stds)
 
 
@@ -244,7 +275,7 @@ class VisiumTrainingTransform(object):
 
     def __call__(self, anchor, pos, neg, anchor_adata, pos_adata, neg_adata):
         """
-        anchor - (n h w), n = 1 if just labeled, n = 4 if rgb included too
+        anchor - (n h w), n = 1 if just labeled
         """
         anchor, pos = self.transforms(torch.stack((anchor, pos)))
         neg = self.transforms(neg)
@@ -255,7 +286,6 @@ class VisiumTrainingTransform(object):
         pos = format_expression(pos, pos_adata, patch_size=self.patch_size)
         neg = format_expression(neg, neg_adata, patch_size=self.patch_size)
         anchor, pos, neg = self.normalize(anchor), self.normalize(pos), self.normalize(neg)
-        anchor, pos, neg = anchor[0], pos[0], neg[0]
 
         return torch.stack((anchor, pos, neg))
         
@@ -335,7 +365,7 @@ class VisiumSectionDataset(Dataset):
     #     # x = torch.exp(x) - 1
     #     return x.to(torch.long)
 
-    
+  
 class VisiumInferenceSectionDataset(InferenceSectionDataset):
     def __init__(
             self, sections, section_to_img, section_to_adata,
@@ -344,7 +374,7 @@ class VisiumInferenceSectionDataset(InferenceSectionDataset):
         super().__init__(sections, section_to_img, size=size, transform=transform)
         self.section_to_adata = section_to_adata
 
-    def image_from_tiles(self, x, to_expression=True, adata=None):
+    def image_from_tiles(self, x, to_expression=False, adata=None):
         pad_h, pad_w = x.shape[-2] // 4, x.shape[-1] // 4
         x = x[..., pad_h:-pad_h, pad_w:-pad_w]
         

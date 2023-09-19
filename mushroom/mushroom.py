@@ -11,7 +11,7 @@ import yaml
 from mushroom.model.sae import SAEargs
 from mushroom.model.learners import SAELearner
 from mushroom.clustering import EmbeddingClusterer, ClusterArgs
-from mushroom.data.visium import format_expression
+from mushroom.data.visium_v2 import format_expression
 
 
 class Mushroom(object):
@@ -37,6 +37,8 @@ class Mushroom(object):
 
         self.learner = self.initialize_learner()
 
+        logging.info('learner initialized')
+
         # print(self.learner.inference_ds.section_to_tiles[s].shape)
         # make a groundtruth reconstruction for original images
         self.true_imgs = torch.stack(
@@ -45,13 +47,21 @@ class Mushroom(object):
         )
 
         if self.dtype in ['visium']:
-            self.true_imgs = torch.cat(
+            # self.true_imgs = torch.cat(
+            #     [format_expression(
+            #         img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
+            #     ) for sid, img in zip(self.section_ids, self.true_imgs)]
+            # )
+            self.true_imgs = torch.stack(
                 [format_expression(
                     img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
                 ) for sid, img in zip(self.section_ids, self.true_imgs)]
             )
+            # print(self.true_imgs.shape)
             
         self.recon_embs, self.recon_imgs = None, None
+
+        logging.info('initializing clusterer')
         self.clusterer = self.initialize_clusterer()
 
         self.dists, self.cluster_ids, self.dists_volume = None, None, None
@@ -71,12 +81,12 @@ class Mushroom(object):
         )
     
     def _get_section_imgs(self, args):
-        if self.recon_imgs is None:
-            emb_size = int(self.true_imgs.shape[-2] / self.learner.train_transform.output_patch_size)
-            section_imgs = TF.resize(self.true_imgs, (emb_size, emb_size), antialias=True)
-        else:
-            emb_size = int(self.recon_imgs.shape[-2] / self.learner.train_transform.output_patch_size)
-            section_imgs = TF.resize(self.recon_imgs, (emb_size, emb_size), antialias=True)
+        # if self.recon_imgs is None:
+        emb_size = int(self.true_imgs.shape[-2] / self.learner.train_transform.output_patch_size)
+        section_imgs = TF.resize(self.true_imgs, (emb_size, emb_size), antialias=True)
+        # else:
+        #     emb_size = int(self.recon_imgs.shape[-2] / self.learner.train_transform.output_patch_size)
+        #     section_imgs = TF.resize(self.recon_imgs, (emb_size, emb_size), antialias=True)
 
         if args.background_channels is None and args.mask_background:
             logging.info('no background channel detected, defaulting to mean of all channels')

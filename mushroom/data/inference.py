@@ -43,8 +43,7 @@ class InferenceSectionDataset(Dataset):
             indexing='ij'
         ))
         self.idx_to_coord = rearrange(
-            outs, 'b n_sections n_rows n_cols -> (n_sections n_rows n_cols) b',
-            n_sections=len(self.sections), n_rows=self.ph, n_cols=self.pw, b=3)
+            outs, 'b n_sections n_rows n_cols -> (n_sections n_rows n_cols) b')
 
         self.transform = transform if transform is not None else nn.Identity()
         

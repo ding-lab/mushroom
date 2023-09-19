@@ -25,7 +25,6 @@ class SAEargs:
     decoder_dim_head: int = 64
     triplet_scaler: float = 1.
     recon_scaler: float = 1.
-    sidecar_rgb: bool = False
 
 
 class SAE(nn.Module):
@@ -41,11 +40,9 @@ class SAE(nn.Module):
         decoder_dim_head = 64,
         triplet_scaler = 1.,
         recon_scaler = 1.,
-        sidecar_rgb = False,
     ):
         super().__init__()
         self.decoder_type = decoder_type
-        self.sidecar_rgb = sidecar_rgb
 
         # extract some hyperparameters and functions from encoder (vision transformer to be trained)
 
@@ -74,11 +71,8 @@ class SAE(nn.Module):
         else:
             self.to_pixels = nn.Linear(decoder_dim, pixel_values_per_patch)
 
-        if self.sidecar_rgb:
-            self.sidecar_encoder = create_model('resnet18', num_classes=encoder_dim)
 
-
-    def encode(self, img, slides, rgb=None):
+    def encode(self, img, slides):
         device = img.device
 
         # get patches
@@ -92,12 +86,8 @@ class SAE(nn.Module):
         tokens = self.patch_to_emb(patches)
         # print('tokens', tokens.shape)
 
-        # add slide emb, and rgb if needed
+        # add slide emb
         slide_tokens = self.slide_embedding(slides) # b d
-
-        if rgb is not None:
-            rgb_tokens = self.sidecar_encoder(rgb) # (b, d)
-            slide_tokens += rgb_tokens
 
         slide_tokens = rearrange(slide_tokens, 'b d -> b 1 d')
         slide_tokens += self.encoder.pos_embedding[:, :1]
@@ -136,7 +126,7 @@ class SAE(nn.Module):
         return decoded_tokens
 
 
-    def forward(self, imgs, slides, imgs_raw=None, rgb=None):
+    def forward(self, imgs, slides, imgs_raw=None):
         """
         imgs - (n b c h w)
           + n=3, first image is anchor tile, second image is positive tile, third image is negative tile
@@ -144,7 +134,7 @@ class SAE(nn.Module):
         outputs = []
         recon_loss = 0
         for i, (img, slide) in enumerate(zip(imgs, slides)):
-            encoded_tokens = self.encode(img, slide, rgb=rgb[i] if rgb is not None else None)
+            encoded_tokens = self.encode(img, slide)
             # print(encoded_tokens.shape)
             
             decoded_tokens = self.decode(encoded_tokens)

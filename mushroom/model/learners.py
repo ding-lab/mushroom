@@ -9,7 +9,8 @@ from torch.utils.data import DataLoader
 from vit_pytorch import ViT
 
 import mushroom.data.multiplex as multiplex
-import mushroom.data.visium as visium
+# import mushroom.data.visium as visium
+import mushroom.data.visium_v2 as visium
 from mushroom.model.sae import SAE, SAEargs
 
 logger = logging.getLogger()
@@ -54,7 +55,7 @@ class SAELearner(object):
         elif self.dtype == 'visium':
             learner_data = visium.get_learner_data(
                 self.config, self.scale, self.size, self.sae_args.patch_size,
-                use_rgb=self.sae_args.sidecar_rgb, channels=channels, channel_mapping=self.channel_mapping, pct_expression=pct_expression,
+                channels=channels, channel_mapping=self.channel_mapping, pct_expression=pct_expression,
             )
         else:
             raise RuntimeError(f'dtype must be one of the following: \
@@ -67,6 +68,7 @@ class SAELearner(object):
         self.inference_ds = learner_data.inference_ds
         self.channels = learner_data.channels
 
+        logging.info('creating data loaders')
         self.train_dl = DataLoader(
             self.train_ds, batch_size=batch_size, num_workers=num_workers
         )
@@ -74,6 +76,7 @@ class SAELearner(object):
             self.inference_ds, batch_size=batch_size, num_workers=num_workers
         )
 
+        logging.info('creating ViT')
         encoder = ViT(
             image_size=self.train_transform.output_size[0],
             patch_size=self.train_transform.output_patch_size,
@@ -87,14 +90,13 @@ class SAELearner(object):
 
         self.sae = SAE(
             encoder=encoder,
-            decoder_type='zinb' if self.dtype in ['visium'] else 'pixels',
+            decoder_type='pixels',
             decoder_dim=self.sae_args.decoder_dim,
             n_slides=len(self.section_to_img),
             decoder_depth=self.sae_args.decoder_depth,
             decoder_dim_head=self.sae_args.decoder_dim_head,
             triplet_scaler=self.sae_args.triplet_scaler,
             recon_scaler=self.sae_args.recon_scaler,
-            sidecar_rgb=self.sae_args.sidecar_rgb
         )
 
         self.sae = self.sae.to(self.device)
@@ -118,15 +120,12 @@ class SAELearner(object):
             section_x = torch.stack((b['anchor_idx'], b['pos_idx'], b['neg_idx']))
             img_x, section_x = img_x.to(device), section_x.to(device)
 
-            print(img_x.shape, section_x.shape)
-
-            if self.dtype in ['visium']:
-                img_raw_x = torch.stack((b['anchor_img_raw'], b['pos_img_raw'], b['neg_img_raw']))
-                rgb = torch.stack((b['anchor_rgb'], b['pos_rgb'], b['neg_rgb']))
-                img_raw_x, rgb = img_raw_x.to(device), rgb.to(device)
-                losses, outputs = self.sae(img_x, section_x, imgs_raw=img_raw_x, rgb=rgb)
-            else:
-                losses, outputs = self.sae(img_x, section_x)
+            # if self.dtype in ['visium']:
+            #     img_raw_x = torch.stack((b['anchor_img_raw'], b['pos_img_raw'], b['neg_img_raw']))
+            #     img_raw_x = img_raw_x.to(device)
+            #     losses, outputs = self.sae(img_x, section_x, imgs_raw=img_raw_x)
+            # else:
+            losses, outputs = self.sae(img_x, section_x)
             loss = losses['overall_loss']
             loss.backward()
             opt.step()
@@ -166,13 +165,11 @@ class SAELearner(object):
             for i, b in enumerate(self.inference_dl):
                 x, section_idx = b['img'], b['section_idx']
                 x, section_idx = x.to(device), section_idx.to(device)
-                rgb = b['rgb'].to(device) if self.dtype in ['visium'] else None
-                encoded_tokens = self.sae.encode(x, section_idx, rgb=rgb)
+                encoded_tokens = self.sae.encode(x, section_idx)
                 decoded_tokens = self.sae.decode(encoded_tokens)
                 pred_pixel_values = self.sae.to_pixels(decoded_tokens[:, 1:])
-                if self.dtype in ['visium']:
-                    pred_pixel_values = pred_pixel_values['exp']
-                print(pred_pixel_values.shape)
+                # if self.dtype in ['visium']:
+                #     pred_pixel_values = pred_pixel_values['exp']
 
                 encoded_tokens = rearrange(encoded_tokens[:, 1:], 'b (h w) d -> b h w d',
                                         h=num_patches, w=num_patches)
@@ -185,13 +182,11 @@ class SAELearner(object):
                 
                 embs[i * bs:(i + 1) * bs] = encoded_tokens.cpu().detach()
                 pred_patches[i * bs:(i + 1) * bs] = pred_pixel_values.cpu().detach()
-        print(pred_patches.shape)
         recon_imgs = torch.stack(
             [self.inference_ds.section_from_tiles(
                 pred_patches, i, size=(self.train_transform.output_size[0], self.train_transform.output_size[1])
             ) for i in range(len(self.inference_ds.sections))]
         )
-        print(recon_imgs.shape)
         recon_embs = torch.stack(
             [self.inference_ds.section_from_tiles(
                 rearrange(embs, 'n h w c -> n c h w'),
