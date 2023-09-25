@@ -5,6 +5,8 @@ import tifffile
 from einops import rearrange
 from scipy import ndimage as ndi
 
+from mushroom.data.visium import get_fullres_size
+
 
 def read_bigwarp_warp_field(fp, downsample_scaler):
     """
@@ -127,6 +129,40 @@ def register_visium(he, adata, ddf, target_pix_per_micron=1., moving_pix_per_mic
 
     scalefactors['spot_diameter_fullres'] *= scale
     scalefactors['fiducial_diameter_fullres'] *= scale
+
+    new.obsm['spatial_original'] = new.obsm['spatial'].copy()
+    x = (torch.tensor(new.obsm['spatial']) * scale).to(torch.long)
+    x = x[:, [1, 0]] # needs to be (h, w) instead of (w, h)
+    transformed, mask = warp_pts(x, ddf)
+    new = new[mask.numpy()]
+    new.obsm['spatial'] = transformed[:, [1, 0]].numpy()
+ 
+    return new
+
+def register_visium_no_he(adata, ddf, target_pix_per_micron=1., moving_pix_per_micron=None):
+    new = adata.copy()
+    if moving_pix_per_micron is None:
+        moving_pix_per_micron = next(iter(
+            adata.uns['spatial'].values()))['scalefactors']['spot_diameter_fullres'] / 65.
+    scale = target_pix_per_micron / moving_pix_per_micron # bring to target img resolution
+    # fullres_size = get_fullres_size(new)
+
+    # d = next(iter(new.uns['spatial'].values()))
+    # scalefactors = d['scalefactors']
+
+    # hires_size = (int(scalefactors['tissue_hires_scalef'] * fullres_size[-2]),
+    #               int(scalefactors['tissue_hires_scalef'] * fullres_size[-1]))
+    # lowres_size = (int(scalefactors['tissue_lowres_scalef'] * fullres_size[-2]),
+    #               int(scalefactors['tissue_lowres_scalef'] * fullres_size[-1]))
+    
+    # hires = TF.resize(he, hires_size, antialias=True)
+    # lowres = TF.resize(he, lowres_size, antialias=True)
+
+    # d['images']['hires'] = rearrange(hires, 'c h w -> h w c').numpy()
+    # d['images']['lowres'] = rearrange(lowres, 'c h w -> h w c').numpy()
+
+    # scalefactors['spot_diameter_fullres'] *= scale
+    # scalefactors['fiducial_diameter_fullres'] *= scale
 
     new.obsm['spatial_original'] = new.obsm['spatial'].copy()
     x = (torch.tensor(new.obsm['spatial']) * scale).to(torch.long)

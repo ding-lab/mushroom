@@ -121,6 +121,8 @@ def format_expression(tiles, adatas, patch_size):
                     barcodes = [l2b[l.item()] for l in labels]
                     exp[i, j] = torch.tensor(adata[barcodes].X.mean(0))
         exp = rearrange(exp, 'h w c -> c h w')
+
+
         exp_imgs.append(exp)
     
     return torch.stack(exp_imgs).squeeze(0)
@@ -285,7 +287,10 @@ class VisiumTrainingTransform(object):
         anchor = format_expression(anchor, anchor_adata, patch_size=self.patch_size) # expects (h, w)
         pos = format_expression(pos, pos_adata, patch_size=self.patch_size)
         neg = format_expression(neg, neg_adata, patch_size=self.patch_size)
-        anchor, pos, neg = self.normalize(anchor), self.normalize(pos), self.normalize(neg)
+        anchor /= rearrange(anchor_adata.X.max(0), 'n -> n 1 1')
+        pos /= rearrange(pos_adata.X.max(0), 'n -> n 1 1')
+        neg /= rearrange(neg_adata.X.max(0), 'n -> n 1 1')
+        # anchor, pos, neg = self.normalize(anchor), self.normalize(pos), self.normalize(neg)
 
         return torch.stack((anchor, pos, neg))
         

@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import torch
 import torchvision.transforms.functional as TF
 import yaml
+from einops import rearrange
 
 from mushroom.model.sae import SAEargs
 from mushroom.model.learners import SAELearner
@@ -55,8 +56,13 @@ class Mushroom(object):
             self.true_imgs = torch.stack(
                 [format_expression(
                     img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
-                ) for sid, img in zip(self.section_ids, self.true_imgs)]
+                ) / rearrange(self.learner.inference_ds.section_to_adata[sid].X.max(0), 'n -> n 1 1') for sid, img in zip(self.section_ids, self.true_imgs)]
             )
+            # self.true_imgs = torch.stack(
+            #     [format_expression(
+            #         img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
+            #     ) for sid, img in zip(self.section_ids, self.true_imgs)]
+            # )
             # print(self.true_imgs.shape)
             
         self.recon_embs, self.recon_imgs = None, None
