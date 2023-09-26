@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import scanpy as sc
+import squidpy as sq
 from einops import rearrange
 from torch.utils.data import Dataset
 import torchvision.transforms.functional as TF
@@ -36,7 +37,8 @@ def adata_from_visium(filepath, normalize=False):
     if ext == 'h5ad':
         adata = sc.read_h5ad(filepath)
     else:
-        adata = sc.read_visium(filepath)
+        # adata = sc.read_visium(filepath)
+        adata = sq.read.visium(filepath)
 
     adata.var_names_make_unique()
 
