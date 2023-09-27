@@ -154,7 +154,7 @@ def get_section_to_image(
         patch_size=1,
         channel_mapping=None,
         scale=.1,
-        # log=True,
+        log=True,
         fullres_size=None
     ):
     if channel_mapping is None:
@@ -172,7 +172,7 @@ def get_section_to_image(
         adata.uns['label_to_barcode'] = {i+1:x for i, x in enumerate(adata.obs.index)}
         adata.uns['barcode_to_label'] = {v:k for k, v in adata.uns['label_to_barcode'].items()}
 
-        # # logp1
+        # logp1
         # if log:
         #     sc.pp.log1p(adata)
 
