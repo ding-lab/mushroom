@@ -12,7 +12,7 @@ from einops import rearrange
 from mushroom.model.sae import SAEargs
 from mushroom.model.learners import SAELearner
 from mushroom.clustering import EmbeddingClusterer, ClusterArgs
-from mushroom.data.visium_v2 import format_expression
+from mushroom.data.visium import format_expression
 
 
 class Mushroom(object):
@@ -65,7 +65,7 @@ class Mushroom(object):
             # )
             # print(self.true_imgs.shape)
             
-        self.recon_embs, self.recon_imgs = None, None
+        self.recon_embs, self.recon_imgs, self.recon_embs_prequant = None, None, None
 
         logging.info('initializing clusterer')
         self.clusterer = self.initialize_clusterer()
@@ -164,7 +164,7 @@ class Mushroom(object):
         if self.chkpt_filepath is None:
             raise RuntimeError('Must either train model or load a model checkpoint. To train, run .train()')
 
-        self.recon_imgs, self.recon_embs = self.learner.embed_sections()
+        self.recon_imgs, self.recon_embs, self.recon_embs_prequant = self.learner.embed_sections()
 
     def cluster_sections(self, recluster=True, **kwargs):
         self.cluster_kwargs.update(kwargs)

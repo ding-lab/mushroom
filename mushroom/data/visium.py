@@ -6,10 +6,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import scanpy as sc
-import squidpy as sq
 from einops import rearrange
 from torch.utils.data import Dataset
 import torchvision.transforms.functional as TF
+from sklearn.decomposition import PCA
 from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, RandomCrop, Compose, Normalize
 
 from mushroom.data.utils import LearnerData
@@ -37,8 +37,7 @@ def adata_from_visium(filepath, normalize=False):
     if ext == 'h5ad':
         adata = sc.read_h5ad(filepath)
     else:
-        # adata = sc.read_visium(filepath)
-        adata = sq.read.visium(filepath)
+        adata = sc.read_visium(filepath)
 
     adata.var_names_make_unique()
 
@@ -50,7 +49,7 @@ def adata_from_visium(filepath, normalize=False):
         adata.X = adata.X.toarray()
 
     if normalize:
-        sc.pp.normalize_total(adata, target_sum=1e4)
+        # sc.pp.normalize_total(adata, target_sum=1e4)
         sc.pp.log1p(adata)
     
     return adata
@@ -79,12 +78,13 @@ def format_expression(tiles, adatas, patch_size):
                 labels = labels[labels!=0]
                 if len(labels):
                     barcodes = [l2b[l.item()] for l in labels]
-                    # exp[i, j] = torch.tensor(adata[barcodes].X.mean(0))
-                    exp[i, j] = torch.tensor(adata[barcodes].X.sum(0))
+                    exp[i, j] = torch.tensor(adata[barcodes].X.mean(0))
         exp = rearrange(exp, 'h w c -> c h w')
+
+
         exp_imgs.append(exp)
     
-    return torch.stack(exp_imgs)
+    return torch.stack(exp_imgs).squeeze(0)
 
 
 def get_common_channels(filepaths, channel_mapping=None, pct_expression=.02):
@@ -110,6 +110,7 @@ def get_common_channels(filepaths, channel_mapping=None, pct_expression=.02):
 def get_section_to_image(
         section_to_adata,
         channels,
+        patch_size=1,
         channel_mapping=None,
         scale=.1,
         log=True,
@@ -118,7 +119,7 @@ def get_section_to_image(
     if channel_mapping is None:
         channel_mapping = {}
 
-    section_to_img, section_to_rgb = {}, {}
+    section_to_img = {}
     for i, (sid, adata) in enumerate(section_to_adata.items()):
         # filter genes/channels
         adata = adata[:, channels]
@@ -129,10 +130,6 @@ def get_section_to_image(
         # assign each barcode an integer label > 0
         adata.uns['label_to_barcode'] = {i+1:x for i, x in enumerate(adata.obs.index)}
         adata.uns['barcode_to_label'] = {v:k for k, v in adata.uns['label_to_barcode'].items()}
-
-        # logp1
-        if log:
-            sc.pp.log1p(adata)
 
         # create labeled image
         if fullres_size is None and i==0:
@@ -146,21 +143,19 @@ def get_section_to_image(
         labeled_locations = torch.zeros(*scaled_size, dtype=torch.long)
         for barcode, (c, r) in zip(adata.obs.index, adata.obsm['spatial_scaled']):
             labeled_locations[r, c] = adata.uns['barcode_to_label'][barcode]
+        labeled_locations = labeled_locations.unsqueeze(0)
+
+        # exp = format_expression(labeled_locations, adata, patch_size)
         
-        section_to_img[sid] = labeled_locations.unsqueeze(0)
+        section_to_img[sid] = labeled_locations
         section_to_adata[sid] = adata
 
-        d = next(iter(adata.uns['spatial'].values()))
-        rgb = torch.tensor(rearrange(d['images']['hires'], 'h w c -> c h w')).to(torch.float32)
-        rgb /= rgb.max()
-        section_to_rgb[sid] = TF.resize(rgb, scaled_size, antialias=True)
-
-    return section_to_img, section_to_adata, section_to_rgb
+    return section_to_img, section_to_adata
 
 
 def get_learner_data(
         config, scale, size, patch_size,
-        use_rgb=False, channels=None, channel_mapping=None, fullres_size=None, pct_expression=.02
+        channels=None, channel_mapping=None, fullres_size=None, pct_expression=.02
     ):
     sid_to_filepaths = {
         entry['id']:d['filepath'] for entry in config for d in entry['data']
@@ -179,9 +174,9 @@ def get_learner_data(
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info(f'processing sections')
-    section_to_adata = {sid:adata_from_visium(fp) for sid, fp in sid_to_filepaths.items()}
-    section_to_img, section_to_adata, section_to_rgb = get_section_to_image( # labeled image where pixels represent location of barcodes, is converted by transform to actual exp image
-        section_to_adata, channels, channel_mapping=channel_mapping, scale=scale, fullres_size=fullres_size
+    section_to_adata = {sid:adata_from_visium(fp, normalize=True) for sid, fp in sid_to_filepaths.items()}
+    section_to_img, section_to_adata = get_section_to_image( # labeled image where pixels represent location of barcodes, is converted by transform to actual exp image
+        section_to_adata, channels, patch_size=patch_size, channel_mapping=channel_mapping, scale=scale, fullres_size=fullres_size
     )
 
     # TODO: find a cleaner way to do this, is long because trying to avoid explicit sparse matrix conversion of .X
@@ -192,30 +187,18 @@ def get_learner_data(
         [a.X.std(0) for a in section_to_adata.values()]
     ).mean(0)).squeeze()
     normalize = Normalize(means, stds)
-    if use_rgb:
-        means = torch.cat(
-            [x.mean(dim=(-2, -1)).unsqueeze(0) for x in section_to_rgb.values()]
-        ).mean(0)
-        stds = torch.cat(
-            [x.std(dim=(-2, -1)).unsqueeze(0) for x in section_to_rgb.values()]
-        ).mean(0)
-        normalize_rgb = Normalize(means, stds)
-
-    else:
-        section_to_rgb = None
-        normalize_rgb = None
 
 
-    train_transform = VisiumTrainingTransform(size=size, patch_size=patch_size, normalize=normalize, normalize_rgb=normalize_rgb)
-    inference_transform = VisiumInferenceTransform(size=size, patch_size=patch_size, normalize=normalize, normalize_rgb=normalize_rgb)
+    train_transform = VisiumTrainingTransform(size=size, patch_size=patch_size, normalize=normalize)
+    inference_transform = VisiumInferenceTransform(size=size, patch_size=patch_size, normalize=normalize)
 
     logging.info('generating training dataset')
     train_ds = VisiumSectionDataset(
-        section_ids, section_to_adata, section_to_img, section_to_rgb=section_to_rgb, transform=train_transform
+        section_ids, section_to_adata, section_to_img, transform=train_transform
     )
     logging.info('generating inference dataset')
     inference_ds = VisiumInferenceSectionDataset(
-        section_ids, section_to_img, section_to_adata, section_to_rgb=section_to_rgb, transform=inference_transform, size=size
+        section_ids, section_to_img, section_to_adata, transform=inference_transform, size=size
     )
 
     learner_data = LearnerData(
@@ -231,77 +214,56 @@ def get_learner_data(
 
 
 class VisiumTrainingTransform(object):
-    def __init__(self, size=(256, 256), patch_size=32, normalize=None, normalize_rgb=None):
+    def __init__(self, size=(256, 256), patch_size=32, normalize=None):
         self.size = size
         self.patch_size = patch_size
         self.output_size = (self.size[0] // self.patch_size, self.size[1] // self.patch_size)
         self.output_patch_size = 1
         self.transforms = Compose([
             RandomCrop(size, padding_mode='reflect'),
-            RandomHorizontalFlip(),
-            RandomVerticalFlip(),
+            # RandomHorizontalFlip(),
+            # RandomVerticalFlip(),
         ])
 
         self.normalize = normalize if normalize is not None else nn.Identity()
-        self.normalize_rgb = normalize_rgb if normalize_rgb is not None else nn.Identity()
-
-        self.has_rgb = True if normalize_rgb is not None else False
 
     def __call__(self, anchor, pos, neg, anchor_adata, pos_adata, neg_adata):
         """
-        anchor - (n h w), n = 1 if just labeled, n = 4 if rgb included too
+        anchor - (n h w), n = 1 if just labeled
         """
         anchor, pos = self.transforms(torch.stack((anchor, pos)))
         neg = self.transforms(neg)
 
-        if self.has_rgb:
-            anchor_rgb, pos_rgb, neg_rgb = anchor[1:], pos[1:], neg[1:]
-            anchor, pos, neg = anchor[0], pos[0], neg[0]
-            anchor, pos, neg = anchor.to(torch.long), pos.to(torch.long), neg.to(torch.long)
-        else:
-            anchor, pos, neg = anchor.squeeze(), pos.squeeze(), neg.squeeze()
+        anchor, pos, neg = anchor.squeeze(), pos.squeeze(), neg.squeeze()
 
         anchor = format_expression(anchor, anchor_adata, patch_size=self.patch_size) # expects (h, w)
         pos = format_expression(pos, pos_adata, patch_size=self.patch_size)
         neg = format_expression(neg, neg_adata, patch_size=self.patch_size)
+        # anchor /= rearrange(anchor_adata.X.max(0), 'n -> n 1 1')
+        # pos /= rearrange(pos_adata.X.max(0), 'n -> n 1 1')
+        # neg /= rearrange(neg_adata.X.max(0), 'n -> n 1 1')
         anchor, pos, neg = self.normalize(anchor), self.normalize(pos), self.normalize(neg)
-        anchor, pos, neg = anchor[0], pos[0], neg[0]
-
-        if self.has_rgb:
-            anchor_rgb, pos_rgb, neg_rgb = [self.normalize_rgb(x) for x in [anchor_rgb, pos_rgb, neg_rgb]]
-            return torch.stack((anchor, pos, neg)), torch.stack((anchor_rgb, pos_rgb, neg_rgb))
 
         return torch.stack((anchor, pos, neg))
         
     
 class VisiumInferenceTransform(object):
-    def __init__(self, size=(256, 256), patch_size=32, normalize=None, normalize_rgb=None):
+    def __init__(self, size=(256, 256), patch_size=32, normalize=None):
         self.size = size
         self.patch_size = patch_size
         self.normalize = normalize if normalize is not None else nn.Identity()
-        self.normalize_rgb = normalize_rgb if normalize_rgb is not None else nn.Identity()
-
-        self.has_rgb = True if normalize_rgb is not None else False
 
     def __call__(self, tile, adata):
-        if self.has_rgb:
-            tile_rgb = tile[1:]
-            tile = tile[0].to(torch.long)
         tile = format_expression(tile, adata, patch_size=self.patch_size)
         tile = self.normalize(tile).squeeze(0)
-
-        if self.has_rgb:
-            tile_rgb = self.normalize_rgb(tile_rgb)
-            return tile, tile_rgb
 
         return tile
     
 class VisiumSectionDataset(Dataset):
-    def __init__(self, sections, section_to_adata, section_to_img, section_to_rgb=None, transform=None):
+    def __init__(self, sections, section_to_adata, section_to_img, transform=None):
         self.sections = sections
         self.section_to_adata = section_to_adata
         self.section_to_img = section_to_img # (h w)
-        self.section_to_rgb = section_to_rgb # (c h w)
 
         self.transform = transform if transform is not None else nn.Identity()
         self.means = torch.tensor(self.transform.normalize.mean)
@@ -333,23 +295,12 @@ class VisiumSectionDataset(Dataset):
             self.section_to_adata[section] for section in [anchor_section, pos_section, neg_section]
         ]
 
-        if self.section_to_rgb is not None:
-            anchor_rgb, pos_rgb, neg_rgb = [
-                self.section_to_rgb[section] for section in [anchor_section, pos_section, neg_section]
-            ]
-            anchor, pos, neg = anchor.to(torch.float32), pos.to(torch.float32), neg.to(torch.float32)
-            anchor, pos, neg = torch.cat((anchor, anchor_rgb)), torch.cat((pos, pos_rgb)), torch.cat((neg, neg_rgb))
-            img_stack, rgb_stack = self.transform(
-                anchor, pos, neg, anchor_adata, pos_adata, neg_adata
-            )
-            anchor_rgb, pos_rgb, neg_rgb = rgb_stack
-        else:
-            img_stack = self.transform(
-                anchor, pos, neg, anchor_adata, pos_adata, neg_adata
-            )
+        img_stack = self.transform(
+            anchor, pos, neg, anchor_adata, pos_adata, neg_adata
+        )
         anchor_img, pos_img, neg_img = img_stack
 
-        anchor_img_raw, pos_img_raw, neg_img_raw = [self.back_to_counts(x) for x in [anchor_img, pos_img, neg_img]]
+        # anchor_img_raw, pos_img_raw, neg_img_raw = [self.back_to_counts(x) for x in [anchor_img, pos_img, neg_img]]
 
         outs = {
             'anchor_idx': anchor_idx,
@@ -358,45 +309,22 @@ class VisiumSectionDataset(Dataset):
             'anchor_img': anchor_img,
             'pos_img': pos_img,
             'neg_img': neg_img,
-            'anchor_img_raw': anchor_img_raw,
-            'pos_img_raw': pos_img_raw,
-            'neg_img_raw': neg_img_raw,
         }
 
-        if self.section_to_rgb is not None:
-            outs.update({
-                'anchor_rgb': anchor_rgb,
-                'pos_rgb': pos_rgb,
-                'neg_rgb': neg_rgb,
-            })
-        
         return outs
-    
-    def back_to_counts(self, x):
-        x *= rearrange(self.stds, 'c -> c 1 1')
-        x += rearrange(self.means, 'c -> c 1 1')
-        # x = torch.exp(x) - 1
-        return x.to(torch.long)
 
-    
+  
 class VisiumInferenceSectionDataset(InferenceSectionDataset):
     def __init__(
-            self, sections, section_to_img, section_to_adata, section_to_rgb=None,
+            self, sections, section_to_img, section_to_adata,
             size=(256, 256), transform=None
         ):
-        if section_to_rgb is not None:
-            # if we have rgb sidecar we need to add to section to image for inference ds to work correctly
-            section_to_img = {k:torch.cat((v.to(torch.float32), section_to_rgb[k])) for k, v in section_to_img.items()}
         super().__init__(sections, section_to_img, size=size, transform=transform)
         self.section_to_adata = section_to_adata
-        self.has_rgb = True if section_to_rgb is not None else False
 
     def image_from_tiles(self, x, to_expression=False, adata=None):
         pad_h, pad_w = x.shape[-2] // 4, x.shape[-1] // 4
         x = x[..., pad_h:-pad_h, pad_w:-pad_w]
-
-        if self.has_rgb:
-            x = x[..., :-3, :, :]
         
         if to_expression:
             ps = self.transform.patch_size
@@ -415,10 +343,7 @@ class VisiumInferenceSectionDataset(InferenceSectionDataset):
         img = self.section_to_tiles[section][row_idx, col_idx]
         adata = self.section_to_adata[section]
 
-        if self.has_rgb:
-            img, rgb = self.transform(img, adata)
-        else:
-            img = self.transform(img, adata)
+        img = self.transform(img, adata)
 
         outs = {
             'section_idx': section_idx,
@@ -426,10 +351,5 @@ class VisiumInferenceSectionDataset(InferenceSectionDataset):
             'col_idx': col_idx,
             'img': img,
         }
-
-        if self.has_rgb:
-            outs.update({
-                'rgb': rgb
-            })
         
         return outs

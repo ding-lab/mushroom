@@ -11,6 +11,7 @@ from skimage.filters import threshold_otsu
 from scipy.ndimage import binary_fill_holes
 from sklearn.cluster import KMeans
 from torchio.transforms import Resize
+from umap import UMAP
 
 from mushroom.visualization.utils import display_labeled_as_rgb
 
@@ -26,13 +27,18 @@ class ClusterArgs:
     centroids: Iterable = None
 
 class EmbeddingClusterer(object):
-    def __init__(self, n_clusters=20, section_imgs=None, section_masks=None, margin=.05, init='k-means++'):
-        self.kmeans = KMeans(n_clusters=n_clusters, n_init='auto', init=init)
+    def __init__(self, n_clusters=20, section_imgs=None, section_masks=None, margin=.05, init='k-means++', use_umap=False , n_components=50):
+        self.kmeans = KMeans(n_clusters=n_clusters, n_init='auto')
         if isinstance(init, np.ndarray):
             self.kmeans.cluster_centers_ = init
 
         self.section_masks = self.autogenerate_section_masks(
             section_imgs, margin=margin) if section_imgs is not None else section_masks
+        
+        self.use_umap = use_umap
+
+        if self.use_umap:
+            self.umap = UMAP(n_components=n_components)
         
     def autogenerate_section_masks(
             self,
@@ -64,6 +70,7 @@ class EmbeddingClusterer(object):
             raise RuntimeError('To mask background pixels section masks indicating section background pixels must be set with either .autogenerate_section_mask or .set_section_masks.')
         
         x = rearrange(recon_embs, 'n c h w -> n h w c')
+        orig = rearrange(x, 'n h w c -> (n h w) c').numpy()
         n, h, w = x.shape[:-1]
         
         if mask_background:
@@ -71,8 +78,12 @@ class EmbeddingClusterer(object):
         else:
             x = rearrange(x, 'n h w c -> (n h w) c').numpy()
 
+        if self.use_umap:
+            x = self.umap.fit_transform(x)
+            orig = self.umap.transform(orig)
+
         self.kmeans.fit(x)
-        dists = self.kmeans.transform(rearrange(recon_embs, 'n c h w -> (n h w) c').numpy())
+        dists = self.kmeans.transform(orig)
         cluster_ids = torch.tensor(dists.argmin(1))
 
         dists = rearrange(torch.tensor(dists), '(n h w) d -> n h w d', n=n, h=h, w=w)
@@ -86,8 +97,12 @@ class EmbeddingClusterer(object):
     
     def transform(self, recon_embs, add_background_cluster=True):
         n, h, w = recon_embs.shape[0], recon_embs.shape[2], recon_embs.shape[3]
+        x = rearrange(recon_embs, 'n c h w -> (n h w) c').numpy()
 
-        dists = self.kmeans.transform(rearrange(recon_embs, 'n c h w -> (n h w) c').numpy())
+        if self.use_umap:
+            x = self.umap.fit_transform(x)
+
+        dists = self.kmeans.transform(x)
         cluster_ids = torch.tensor(dists.argmin(1))
 
         dists = rearrange(torch.tensor(dists), '(n h w) d -> n h w d', n=n, h=h, w=w)
