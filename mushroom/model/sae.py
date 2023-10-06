@@ -75,12 +75,12 @@ class SAE(nn.Module):
         n = int((num_patches - 1)**.5)
         self.repatch = Rearrange('b (h w) d -> b h w d', h=n, w=n)
 
-        codebook_size = 20
+        codebook_size = 100
         self.vq = VectorQuantize(
             dim = encoder_dim,
             codebook_size = codebook_size,     # codebook size
-            decay = 0.8,             # the exponential moving average decay, lower means the dictionary will change faster
-            commitment_weight = 1.   # the weight on the commitment loss
+            # use_cosine_sim = True,
+            orthogonal_reg_weight = 5,
         )
 
 
@@ -145,11 +145,12 @@ class SAE(nn.Module):
         """
         outputs = []
         recon_loss = 0
+        vq_loss = 0
         for i, (img, slide) in enumerate(zip(imgs, slides)):
             encoded_tokens = self.encode(img, slide)
 
             # quantize
-            encoded_tokens, indices, _ = self.quantize(encoded_tokens)
+            encoded_tokens, indices, commit_loss = self.quantize(encoded_tokens)
             # print(encoded_tokens.shape)
             
             decoded_tokens = self.decode(encoded_tokens)
@@ -163,15 +164,17 @@ class SAE(nn.Module):
                 loss = F.mse_loss(pred_pixel_values, self.to_patch(img))
 
             recon_loss += loss
+            # vq_loss += commit_loss
 
             outputs.append({
                 'encoded_tokens': encoded_tokens,
                 'decoded_tokens': decoded_tokens,
                 'pred_pixel_values': pred_pixel_values,
-                'indices': indices,
+                # 'indices': indices,
                 'recon_loss': loss
             })
         recon_loss /= len(imgs)
+        # vq_loss /= len(imgs)
 
         idxs = torch.arange(1, outputs[0]['encoded_tokens'].shape[1])
         # idxs = idxs[torch.randperm(idxs.shape[0])][:10]
@@ -220,13 +223,14 @@ class SAE(nn.Module):
         neg = F.cosine_embedding_loss(anchor_embs, neg_embs, -torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
         triplet_loss = pos + neg
 
-        # overall_loss = triplet_loss * self.triplet_scaler + recon_loss * self.recon_scaler
-        overall_loss = recon_loss
+        overall_loss = triplet_loss * self.triplet_scaler + recon_loss * self.recon_scaler
+        # overall_loss = recon_loss + (vq_loss[0] * .2)
 
         losses = {
             'overall_loss': overall_loss,
             'recon_loss': recon_loss,
             'triplet_loss': triplet_loss,
+            # 'commit_loss': vq_loss[0],
             # 'neighbor_loss': neighbor_loss
         }
         

@@ -51,6 +51,7 @@ def adata_from_visium(filepath, normalize=False):
     if normalize:
         # sc.pp.normalize_total(adata, target_sum=1e4)
         sc.pp.log1p(adata)
+        # adata.X = adata.X / adata.X.max(0)
     
     return adata
 
@@ -72,13 +73,19 @@ def format_expression(tiles, adatas, patch_size):
 
         exp = torch.zeros(x.shape[0], x.shape[1], adata.shape[1], dtype=torch.float32)
         l2b = adata.uns['label_to_barcode']
+        spots = adata.obs.index.to_list()
         for i in range(x.shape[0]):
             for j in range(x.shape[1]):
                 labels = x[i, j]
                 labels = labels[labels!=0]
                 if len(labels):
-                    barcodes = [l2b[l.item()] for l in labels]
-                    exp[i, j] = torch.tensor(adata[barcodes].X.mean(0))
+                    # barcodes = [l2b[l.item()] for l in labels]
+                    # exp[i, j] = torch.tensor(adata[barcodes].X.mean(0))
+                    barcodes = {l2b[l.item()] for l in labels}
+                    mask = [True if x in barcodes else False for x in spots]
+                    # print(mask.shape, adata.X.shape)
+                    exp[i, j] = torch.tensor(adata.X[mask].mean(0))
+
         exp = rearrange(exp, 'h w c -> c h w')
 
 
@@ -113,7 +120,6 @@ def get_section_to_image(
         patch_size=1,
         channel_mapping=None,
         scale=.1,
-        log=True,
         fullres_size=None
     ):
     if channel_mapping is None:
@@ -221,8 +227,8 @@ class VisiumTrainingTransform(object):
         self.output_patch_size = 1
         self.transforms = Compose([
             RandomCrop(size, padding_mode='reflect'),
-            # RandomHorizontalFlip(),
-            # RandomVerticalFlip(),
+            RandomHorizontalFlip(),
+            RandomVerticalFlip(),
         ])
 
         self.normalize = normalize if normalize is not None else nn.Identity()
@@ -255,6 +261,8 @@ class VisiumInferenceTransform(object):
 
     def __call__(self, tile, adata):
         tile = format_expression(tile, adata, patch_size=self.patch_size)
+        # tile /= rearrange(adata.X.max(0), 'n -> n 1 1')
+        # tile = tile.squeeze(0)
         tile = self.normalize(tile).squeeze(0)
 
         return tile

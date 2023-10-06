@@ -165,6 +165,7 @@ class Mushroom(object):
             raise RuntimeError('Must either train model or load a model checkpoint. To train, run .train()')
 
         self.recon_imgs, self.recon_embs, self.recon_embs_prequant = self.learner.embed_sections()
+        # self.recon_imgs, self.recon_embs = self.learner.embed_sections()
 
     def cluster_sections(self, recluster=True, **kwargs):
         self.cluster_kwargs.update(kwargs)

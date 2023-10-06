@@ -9,9 +9,9 @@ from torch.utils.data import DataLoader
 from vit_pytorch import ViT
 
 import mushroom.data.multiplex as multiplex
-# import mushroom.data.visium as visium
 import mushroom.data.visium as visium
-from mushroom.model.sae import SAE, SAEargs
+# from mushroom.model.sae import SAE, SAEargs
+from mushroom.model.sae_v2 import SAE, SAEargs
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -162,18 +162,20 @@ class SAELearner(object):
             for i, b in enumerate(self.inference_dl):
                 x, section_idx = b['img'], b['section_idx']
                 x, section_idx = x.to(device), section_idx.to(device)
-                # encoded_tokens = self.sae.encode(x, section_idx)
+                encoded_tokens, mu, std = self.sae.encode(x, section_idx, use_means=True)
 
-                prequant_tokens = self.sae.encode(x, section_idx)
-                encoded_tokens, indices, _ = self.sae.quantize(prequant_tokens)
+                # prequant_tokens = self.sae.encode(x, section_idx)
+                # encoded_tokens, indices, _ = self.sae.quantize(prequant_tokens)
+
+                
                 decoded_tokens = self.sae.decode(encoded_tokens)
                 pred_pixel_values = self.sae.to_pixels(decoded_tokens[:, 1:])
                 # if self.dtype in ['visium']:
                 #     pred_pixel_values = pred_pixel_values['exp']
 
 
-                prequant_tokens = rearrange(prequant_tokens[:, 1:], 'b (h w) d -> b h w d',
-                                        h=num_patches, w=num_patches)
+                # prequant_tokens = rearrange(prequant_tokens[:, 1:], 'b (h w) d -> b h w d',
+                #                         h=num_patches, w=num_patches)
                 encoded_tokens = rearrange(encoded_tokens[:, 1:], 'b (h w) d -> b h w d',
                                         h=num_patches, w=num_patches)
                 pred_pixel_values = rearrange(
@@ -183,7 +185,7 @@ class SAELearner(object):
                     # p1=self.sae_args.patch_size, p2=self.sae_args.patch_size,
                     c=len(self.channels))
                 
-                embs_prequant[i * bs:(i + 1) * bs] = prequant_tokens.cpu().detach()
+                # embs_prequant[i * bs:(i + 1) * bs] = prequant_tokens.cpu().detach()
                 embs[i * bs:(i + 1) * bs] = encoded_tokens.cpu().detach()
                 pred_patches[i * bs:(i + 1) * bs] = pred_pixel_values.cpu().detach()
         recon_imgs = torch.stack(
@@ -197,15 +199,16 @@ class SAELearner(object):
                 i, size=(num_patches, num_patches))
                 for i in range(len(self.inference_ds.sections))] 
         )
-        recon_embs_prequant = torch.stack(
-            [self.inference_ds.section_from_tiles(
-                rearrange(embs_prequant, 'n h w c -> n c h w'),
-                i, size=(num_patches, num_patches))
-                for i in range(len(self.inference_ds.sections))] 
-        )
+        # recon_embs_prequant = torch.stack(
+        #     [self.inference_ds.section_from_tiles(
+        #         rearrange(embs_prequant, 'n h w c -> n c h w'),
+        #         i, size=(num_patches, num_patches))
+        #         for i in range(len(self.inference_ds.sections))] 
+        # )
         recon_embs = self.regress_patch_position(recon_embs)
 
-        return recon_imgs, recon_embs, recon_embs_prequant
+        # return recon_imgs, recon_embs, recon_embs_prequant
+        return recon_imgs, recon_embs, None
     
     def regress_patch_position(
             self,

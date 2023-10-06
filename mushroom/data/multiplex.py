@@ -90,7 +90,7 @@ def write_basic_ome_tiff(filepath, data, channels, pix_per_micron=1.):
         )
 
 
-def make_pseudo(channel_to_img, cmap=None, contrast_pct=20.):
+def make_pseudo(channel_to_img, cmap=None, contrast_pct=20., contrast_mapping=None):
     cmap = sns.color_palette('tab10') if cmap is None else cmap
 
     new = np.zeros_like(next(iter(channel_to_img.values())))
@@ -102,7 +102,11 @@ def make_pseudo(channel_to_img, cmap=None, contrast_pct=20.):
         new /= new.max()
 
         try:
-            vmax = np.percentile(new[new>0], (contrast_pct)) if np.count_nonzero(new) else 1.
+            if contrast_mapping is not None:
+                cp = contrast_mapping.get(channel, contrast_pct)
+            else:
+                cp = contrast_pct
+            vmax = np.percentile(new[new>0], (cp)) if np.count_nonzero(new) else 1.
             new = rescale_intensity(new, in_range=(0., vmax))
         except IndexError:
             pass
