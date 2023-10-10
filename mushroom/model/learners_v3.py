@@ -183,7 +183,7 @@ class SAELearner(object):
                 i, size=(num_patches, num_patches))
                 for i in range(len(self.inference_ds.sections))] 
         )
-        recon_embs = self.regress_patch_position(recon_embs)
+        # recon_embs = self.regress_patch_position(recon_embs)
 
         return recon_imgs, recon_embs
     
