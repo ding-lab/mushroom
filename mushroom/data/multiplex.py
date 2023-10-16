@@ -215,8 +215,8 @@ class MultiplexTrainingTransform(object):
         self.output_patch_size = patch_size
         self.transforms = Compose([
             RandomCrop(size, padding_mode='reflect'),
-            # RandomHorizontalFlip(),
-            # RandomVerticalFlip(),
+            RandomHorizontalFlip(),
+            RandomVerticalFlip(),
             normalize if normalize is not None else nn.Identity()
         ])
 
