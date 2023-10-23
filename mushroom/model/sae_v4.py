@@ -71,36 +71,17 @@ class SAE(nn.Module):
             nn.Linear(5000, pixel_values_per_patch),
         )
 
-        # decoder parameters
-        # self.decoder_dim = decoder_dim
-        # # self.enc_to_dec = nn.Linear(encoder_dim, decoder_dim) if encoder_dim != decoder_dim else nn.Identity()
-        # self.enc_to_dec = nn.Linear(encoder_dim, decoder_dim)
-        # self.decoder = Transformer(dim = decoder_dim, depth = decoder_depth, heads = decoder_heads, dim_head = decoder_dim_head, mlp_dim = decoder_dim * 4)
-        # self.decoder_pos_emb = nn.Embedding(num_patches + 1, decoder_dim)
-
-        # if self.decoder_type == 'zinb':
-        #     self.to_pixels = ZinbReconstructor(decoder_dim, pixel_values_per_patch, n_metagenes=20)
-        # else:
-        #     self.to_pixels = nn.Linear(decoder_dim, pixel_values_per_patch)
-        
-        # n = int((num_patches - 1)**.5)
-        # self.repatch = Rearrange('b (h w) d -> b h w d', h=n, w=n)
-
         self.latent_mu = nn.Linear(encoder_dim, encoder_dim)
         self.latent_var = nn.Linear(encoder_dim, encoder_dim)
         self.latent_norm = nn.BatchNorm1d(num_patches)
-
-        # self.latent_mu = nn.Conv2d(in_channels=out_channels, out_channels=out_channels,
-        #                            kernel_size=1)
-        # self.latent_var = nn.Conv2d(in_channels=out_channels, out_channels=out_channels,
-        #                             kernel_size=1)
-        # self.latent_norm = nn.BatchNorm2d(out_channels)
 
         codebook_size = 100
         self.vq = VectorQuantize(
             dim = encoder_dim,
             codebook_size = codebook_size,     # codebook size
         )
+
+        # self.scale_factors = nn.Embedding(self.n_slides, pixel_values_per_patch)
 
     def _kl_divergence(self, z, mu, std):
         # lightning imp.
@@ -192,6 +173,8 @@ class SAE(nn.Module):
             encoded_tokens, _, _ = self.quantize(encoded_tokens_prequant)
 
             pred_pixel_values = self.decode(encoded_tokens)
+
+            # pred_pixel_values *= rearrange(self.scale_factors(slide), 'b d -> b 1 d') # scale by slide scale factors
 
             loss = F.mse_loss(pred_pixel_values, self.to_patch(img))
 
