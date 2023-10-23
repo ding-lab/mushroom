@@ -51,7 +51,6 @@ def adata_from_visium(filepath, normalize=False):
     if normalize:
         # sc.pp.normalize_total(adata, target_sum=1e4)
         sc.pp.log1p(adata)
-        # adata.X = adata.X / adata.X.max(0)
     
     return adata
 
