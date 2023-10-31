@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Iterable
 
 import torch
 from torch import nn
@@ -17,14 +18,13 @@ class SAEargs:
     size: int = 256
     patch_size: int = 32
     encoder_dim: int = 1024
+    decoder_dims: Iterable = (1024, 1024, 1024 * 4,)
     encoder_depth: int = 6
     heads: int = 8
     mlp_dim: int = 2048
     num_classes: int = 1000
-    decoder_dim: int = 512
-    decoder_depth: int = 6
-    decoder_dim_head: int = 64
-    triplet_scaler: float = 1.
+    codebook_size: int = 100
+    kl_scaler: float = 1.
     recon_scaler: float = 1.
 
 
@@ -33,24 +33,20 @@ class SAE(nn.Module):
         self,
         *,
         encoder,
-        decoder_dim,
         n_slides,
-        decoder_type = 'pixels',
-        decoder_depth = 1,
-        decoder_heads = 8,
-        decoder_dim_head = 64,
-        triplet_scaler = 1.,
+        n_channels,
+        codebook_size = 100,
+        decoder_dims = (1024, 1024, 1024 * 4,),
+        kl_scaler = 1.,
         recon_scaler = 1.,
     ):
         super().__init__()
-        self.decoder_type = decoder_type
-
-        # extract some hyperparameters and functions from encoder (vision transformer to be trained)
-
-        self.triplet_scaler = triplet_scaler
+        self.kl_scaler = kl_scaler
         self.recon_scaler = recon_scaler
 
         self.encoder = encoder
+        self.decoder_dims = decoder_dims
+        self.n_channels = n_channels
         num_patches, encoder_dim = encoder.pos_embedding.shape[-2:]
 
         self.n_slides = n_slides
@@ -59,44 +55,63 @@ class SAE(nn.Module):
         self.to_patch = encoder.to_patch_embedding[0]
         self.patch_to_emb = nn.Sequential(*encoder.to_patch_embedding[1:])
 
-        pixel_values_per_patch = encoder.to_patch_embedding[2].weight.shape[-1]
+        # pixel_values_per_patch = encoder.to_patch_embedding[2].weight.shape[-1]
 
-        # decoder parameters
-        self.decoder_dim = decoder_dim
-        self.enc_to_dec = nn.Linear(encoder_dim, decoder_dim) if encoder_dim != decoder_dim else nn.Identity()
-        self.decoder = Transformer(dim = decoder_dim, depth = decoder_depth, heads = decoder_heads, dim_head = decoder_dim_head, mlp_dim = decoder_dim * 4)
-        self.decoder_pos_emb = nn.Embedding(num_patches + 1, decoder_dim)
+        blocks = []
+        for i, dim in enumerate(decoder_dims):
+            if i == 0:
+                block = nn.Sequential(
+                    nn.Linear(encoder_dim, dim),
+                    nn.ReLU()
+                )
+            else:
+                block = nn.Sequential(
+                    nn.Linear(decoder_dims[i - 1], dim),
+                    nn.ReLU()
+                )
+            blocks.append(block)
+        blocks.append(nn.Sequential(
+            nn.Sequential(
+                nn.Linear(decoder_dims[-1], n_channels),
+            )
+        ))
+        self.decoder = nn.Sequential(*blocks)
 
-        if self.decoder_type == 'zinb':
-            self.to_pixels = ZinbReconstructor(decoder_dim, pixel_values_per_patch, n_metagenes=20)
-        else:
-            self.to_pixels = nn.Linear(decoder_dim, pixel_values_per_patch)
-        
-        n = int((num_patches - 1)**.5)
-        self.repatch = Rearrange('b (h w) d -> b h w d', h=n, w=n)
+        self.latent_mu = nn.Linear(encoder_dim, encoder_dim)
+        self.latent_var = nn.Linear(encoder_dim, encoder_dim)
+        self.latent_norm = nn.BatchNorm1d(num_patches)
 
-        codebook_size = 100
         self.vq = VectorQuantize(
             dim = encoder_dim,
             codebook_size = codebook_size,     # codebook size
-            # use_cosine_sim = True,
-            orthogonal_reg_weight = 5,
         )
 
+        self.scale_factors = nn.Embedding(self.n_slides, n_channels)
 
-    def encode(self, img, slides):
+    def _kl_divergence(self, z, mu, std):
+        # lightning imp.
+        # Monte carlo KL divergence
+        p = torch.distributions.Normal(torch.zeros_like(mu), torch.ones_like(std))
+        q = torch.distributions.Normal(mu, std)
+
+        log_qzx = q.log_prob(z)
+        log_pz = p.log_prob(z)
+
+        kl = (log_qzx - log_pz)
+        kl = kl.sum(-1)
+
+        return kl
+
+
+    def encode(self, img, slides, use_means=False):
         device = img.device
 
         # get patches
-        # print('img', img.shape)
         patches = self.to_patch(img) # b (h w) (p1 p2 c)
-        # print('patches', patches.shape)
         batch, num_patches, *_ = patches.shape
 
         # patch to encoder tokens and add positions
-
         tokens = self.patch_to_emb(patches)
-        # print('tokens', tokens.shape)
 
         # add slide emb
         slide_tokens = self.slide_embedding(slides) # b d
@@ -107,14 +122,25 @@ class SAE(nn.Module):
         tokens += self.encoder.pos_embedding[:, 1:(num_patches + 1)]
 
         # add slide token
-
         tokens = torch.cat((slide_tokens, tokens), dim=1)
 
         # attend with vision transformer
-
         encoded_tokens = self.encoder.transformer(tokens)
 
-        return encoded_tokens
+        # encoded_tokens = self.latent_norm(encoded_tokens)
+        mu, log_var = self.latent_mu(encoded_tokens), self.latent_var(encoded_tokens)
+        
+        # sample z from parameterized distributions
+        std = torch.exp(log_var / 2)
+        q = torch.distributions.Normal(mu, std)
+        # get our latent
+        if use_means:
+            z = mu
+        else:
+            z = q.rsample()
+
+        return z, mu, std
+
     
     def quantize(self, encoded_tokens):
         # vector quantize
@@ -124,115 +150,49 @@ class SAE(nn.Module):
 
         return encoded_tokens, indices, commit_loss
     
-    def decode(self, encoded_tokens):
-        device = encoded_tokens.device
+    def decode(self, encoded_tokens, slide, scale=True):
         
-        # project encoder to decoder dimensions, if they are not equal - the paper says you can get away with a smaller dimension for decoder
+        pred_pixel_values = self.decoder(encoded_tokens[:, 1:])
 
-        decoder_tokens = self.enc_to_dec(encoded_tokens)
+        if scale:
+            scale_factors = rearrange(self.scale_factors(slide), 'b d -> b 1 d')
+            # pred_pixel_values = F.sigmoid(pred_pixel_values) * scale_factors
+            pred_pixel_values = pred_pixel_values * scale_factors
 
-        decoder_tokens += self.decoder_pos_emb(torch.arange(decoder_tokens.shape[1], device=device))
-
-        decoded_tokens = self.decoder(decoder_tokens)
-
-        return decoded_tokens
+        return pred_pixel_values
 
 
-    def forward(self, imgs, slides, imgs_raw=None):
+    def forward(self, img, slide, use_means=False):
         """
         imgs - (n b c h w)
           + n=3, first image is anchor tile, second image is positive tile, third image is negative tile
         """
         outputs = []
-        recon_loss = 0
-        vq_loss = 0
-        for i, (img, slide) in enumerate(zip(imgs, slides)):
-            encoded_tokens = self.encode(img, slide)
 
-            # quantize
-            encoded_tokens, indices, commit_loss = self.quantize(encoded_tokens)
-            # print(encoded_tokens.shape)
-            
-            decoded_tokens = self.decode(encoded_tokens)
+        encoded_tokens_prequant, mu, std  = self.encode(img, slide, use_means=use_means)
 
-            pred_pixel_values = self.to_pixels(decoded_tokens[:, 1:])
-            if self.decoder_type == 'zinb':
-                patches = self.to_patch(imgs_raw[i]) # (b n genes)
-                loss = torch.mean(-pred_pixel_values['nb'].log_prob(patches))
-                pred_pixel_values = pred_pixel_values['exp']
-            else:
-                loss = F.mse_loss(pred_pixel_values, self.to_patch(img))
+        encoded_tokens, _, _ = self.quantize(encoded_tokens_prequant)
 
-            recon_loss += loss
-            # vq_loss += commit_loss
+        pred_pixel_values = self.decode(encoded_tokens, slide) # (b, n, channels)
 
-            outputs.append({
-                'encoded_tokens': encoded_tokens,
-                'decoded_tokens': decoded_tokens,
-                'pred_pixel_values': pred_pixel_values,
-                # 'indices': indices,
-                'recon_loss': loss
-            })
-        recon_loss /= len(imgs)
-        # vq_loss /= len(imgs)
+        # (b c h w)
+        patches = rearrange(img, 'b c (h p1) (w p2) -> b (h w) (p1 p2) c',
+                            p1=self.to_patch.axes_lengths['p1'], p2=self.to_patch.axes_lengths['p2'])
+        patches = patches.mean(-2)
+        recon_loss = F.mse_loss(pred_pixel_values, patches) # (b, n, channels)
+        kl_loss = torch.mean(self._kl_divergence(encoded_tokens_prequant, mu, std))
 
-        idxs = torch.arange(1, outputs[0]['encoded_tokens'].shape[1])
-        # idxs = idxs[torch.randperm(idxs.shape[0])][:10]
-        idxs = idxs[torch.randperm(idxs.shape[0])]
-        neg_idxs = idxs[torch.randperm(idxs.shape[0])]
-        
-        anchor_embs = outputs[0]['encoded_tokens'][:, idxs]
-        pos_embs = outputs[1]['encoded_tokens'][:, idxs]
-        neg_embs = outputs[2]['encoded_tokens'][:, neg_idxs]
-        anchor_embs = rearrange(anchor_embs, 'b n d -> (b n) d')
-        pos_embs = rearrange(pos_embs, 'b n d -> (b n) d')
-        neg_embs = rearrange(neg_embs, 'b n d -> (b n) d')
+        outputs = {
+            'encoded_tokens_prequant': encoded_tokens_prequant,
+            'encoded_tokens': encoded_tokens,
+            'pred_pixel_values': pred_pixel_values,
+        }
 
-
-
-
-        # anchor_repatched = self.repatch(outputs[0]['encoded_tokens'][:, 1:])
-        # pos_repatched = self.repatch(outputs[1]['encoded_tokens'][:, 1:])
-        # n_tokens = outputs[0]['encoded_tokens'].shape[1] - 1
-        # anchor_row_idxs = torch.randint(1, int(n_tokens**.5) - 1, (n_tokens,))
-        # anchor_col_idxs = torch.randint(1, int(n_tokens**.5) - 1, (n_tokens,))
-        # pos_row_idxs = anchor_row_idxs + torch.randint(-1, 2, (n_tokens,))
-        # pos_col_idxs = anchor_col_idxs + torch.randint(-1, 2, (n_tokens,))
-        # anchor_embs = anchor_repatched[:, anchor_row_idxs, anchor_col_idxs] # (b, n, d)
-        # pos_embs = pos_repatched[:, pos_row_idxs, pos_col_idxs]
-
-        # neg_idxs = torch.randperm(pos_embs.shape[1]) + 1
-        # neg_embs = outputs[2]['encoded_tokens'][:, neg_idxs]
-
-
-        # anchor_embs = rearrange(anchor_embs, 'b n d -> (b n) d')
-        # pos_embs = rearrange(pos_embs, 'b n d -> (b n) d')
-        # neg_embs = rearrange(neg_embs, 'b n d -> (b n) d')
-
-
-
-
-
-
-        # neighbor_loss = F.cosine_embedding_loss(anchor_embs, anchor_embs[torch.randperm(anchor_embs.shape[0])],
-        #                                    -torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
-
-
-
-        pos = F.cosine_embedding_loss(anchor_embs, pos_embs, torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
-        neg = F.cosine_embedding_loss(anchor_embs, neg_embs, -torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
-        triplet_loss = pos + neg
-
-        overall_loss = triplet_loss * self.triplet_scaler + recon_loss * self.recon_scaler
-        # overall_loss = recon_loss + (vq_loss[0] * .2)
-
+        overall_loss = recon_loss * self.recon_scaler + kl_loss * self.kl_scaler
         losses = {
             'overall_loss': overall_loss,
             'recon_loss': recon_loss,
-            'triplet_loss': triplet_loss,
-            # 'commit_loss': vq_loss[0],
-            # 'neighbor_loss': neighbor_loss
+            'kl_loss': kl_loss,
         }
-        
 
         return losses, outputs

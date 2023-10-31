@@ -78,11 +78,8 @@ def format_expression(tiles, adatas, patch_size):
                 labels = x[i, j]
                 labels = labels[labels!=0]
                 if len(labels):
-                    # barcodes = [l2b[l.item()] for l in labels]
-                    # exp[i, j] = torch.tensor(adata[barcodes].X.mean(0))
                     barcodes = {l2b[l.item()] for l in labels}
                     mask = [True if x in barcodes else False for x in spots]
-                    # print(mask.shape, adata.X.shape)
                     exp[i, j] = torch.tensor(adata.X[mask].mean(0))
 
         exp = rearrange(exp, 'h w c -> c h w')
@@ -232,24 +229,19 @@ class VisiumTrainingTransform(object):
 
         self.normalize = normalize if normalize is not None else nn.Identity()
 
-    def __call__(self, anchor, pos, neg, anchor_adata, pos_adata, neg_adata):
+    def __call__(self, tile, adata):
         """
         anchor - (n h w), n = 1 if just labeled
         """
-        anchor, pos = self.transforms(torch.stack((anchor, pos)))
-        neg = self.transforms(neg)
+        tile = self.transforms(tile)
 
-        anchor, pos, neg = anchor.squeeze(), pos.squeeze(), neg.squeeze()
+        tile = tile.squeeze()
 
-        anchor = format_expression(anchor, anchor_adata, patch_size=self.patch_size) # expects (h, w)
-        pos = format_expression(pos, pos_adata, patch_size=self.patch_size)
-        neg = format_expression(neg, neg_adata, patch_size=self.patch_size)
-        # anchor /= rearrange(anchor_adata.X.max(0), 'n -> n 1 1')
-        # pos /= rearrange(pos_adata.X.max(0), 'n -> n 1 1')
-        # neg /= rearrange(neg_adata.X.max(0), 'n -> n 1 1')
-        anchor, pos, neg = self.normalize(anchor), self.normalize(pos), self.normalize(neg)
+        tile = format_expression(tile, adata, patch_size=self.patch_size) # expects (h, w)
 
-        return torch.stack((anchor, pos, neg))
+        tile = self.normalize(tile)
+
+        return tile
         
     
 class VisiumInferenceTransform(object):
@@ -260,8 +252,6 @@ class VisiumInferenceTransform(object):
 
     def __call__(self, tile, adata):
         tile = format_expression(tile, adata, patch_size=self.patch_size)
-        # tile /= rearrange(adata.X.max(0), 'n -> n 1 1')
-        # tile = tile.squeeze(0)
         tile = self.normalize(tile).squeeze(0)
 
         return tile
@@ -280,42 +270,17 @@ class VisiumSectionDataset(Dataset):
         return np.iinfo(np.int64).max # make infinite
 
     def __getitem__(self, idx):
-        anchor_section = np.random.choice(self.sections)
-        anchor_idx = self.sections.index(anchor_section)
+        section = np.random.choice(self.sections)
+        idx = self.sections.index(section)
 
-        if anchor_idx == 0:
-            pos_idx = 1
-        elif anchor_idx == len(self.sections) - 1:
-            pos_idx = anchor_idx - 1
-        else:
-            pos_idx = np.random.choice([anchor_idx - 1, anchor_idx + 1])
-        pos_section = self.sections[pos_idx]
+        tile = self.section_to_img[section]
+        adata = self.section_to_adata[section]
 
-        neg_section = np.random.choice(self.sections)
-        neg_idx = self.sections.index(anchor_section)
-
-        anchor, pos, neg = [
-            self.section_to_img[section] for section in [anchor_section, pos_section, neg_section]
-        ]
-
-        anchor_adata, pos_adata, neg_adata = [
-            self.section_to_adata[section] for section in [anchor_section, pos_section, neg_section]
-        ]
-
-        img_stack = self.transform(
-            anchor, pos, neg, anchor_adata, pos_adata, neg_adata
-        )
-        anchor_img, pos_img, neg_img = img_stack
-
-        # anchor_img_raw, pos_img_raw, neg_img_raw = [self.back_to_counts(x) for x in [anchor_img, pos_img, neg_img]]
+        tile = self.transform(tile, adata)
 
         outs = {
-            'anchor_idx': anchor_idx,
-            'pos_idx': pos_idx,
-            'neg_idx': neg_idx,
-            'anchor_img': anchor_img,
-            'pos_img': pos_img,
-            'neg_img': neg_img,
+            'idx': idx,
+            'tile': tile,
         }
 
         return outs
@@ -353,10 +318,10 @@ class VisiumInferenceSectionDataset(InferenceSectionDataset):
         img = self.transform(img, adata)
 
         outs = {
-            'section_idx': section_idx,
+            'idx': section_idx,
             'row_idx': row_idx,
             'col_idx': col_idx,
-            'img': img,
+            'tile': img,
         }
         
         return outs

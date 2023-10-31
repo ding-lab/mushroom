@@ -132,33 +132,31 @@ def get_common_channels(filepaths, channel_mapping=None):
     return channels
 
 
-def get_section_to_image(sid_to_filepaths, channels, channel_mapping=None, scale=.1):
+def get_section_to_image(sid_to_filepaths, channels, channel_mapping=None, scale=.1, contrast_pct=95.):
     if channel_mapping is None:
         channel_mapping = {}
 
     section_to_img = {}
     for sid, filepath in sid_to_filepaths.items():
-        # print('here')
-        # channel_to_imgs = extract_ome_tiff(filepath)
-        # channel_to_imgs = {channel_mapping.get(c, c):img for c, img in channel_to_imgs.items()}
-        # channel_to_imgs = {c:img for c, img in channel_to_imgs.items() if c in channels}
-        # imgs = torch.stack([torch.tensor(channel_to_imgs[c]) for c in channels])
         cs, imgs = extract_ome_tiff(filepath, as_dict=False, scale=scale)
         cs = [channel_mapping.get(c, c) for c in cs]
-        idxs = [i for i, c in enumerate(cs) if c in channels]
-        imgs = imgs[idxs]
+        idxs = [cs.index(c) for c in channels]
+        imgs = imgs[idxs].astype(np.float32)
+
+        if contrast_pct is not None:
+            for i, bw in enumerate(imgs):
+                bw -= bw.min()
+                bw /= bw.max()
+                vmax = np.percentile(bw[bw>0], (contrast_pct), axis=-1) if np.count_nonzero(bw) else 1.
+                imgs[i] = rescale_intensity(bw, in_range=(0., vmax))
+
         imgs = torch.tensor(imgs)
-        
-        # imgs = TF.resize(
-        #     imgs, (int(scale * imgs.shape[-2]), int(scale * imgs.shape[-1])), antialias=True
-        # )
-        imgs = imgs.to(torch.float32)
         
         section_to_img[sid] = imgs
     return section_to_img
 
 
-def get_learner_data(config, scale, size, patch_size, channels=None, channel_mapping=None):
+def get_learner_data(config, scale, size, patch_size, channels=None, channel_mapping=None, contrast_pct=None):
     sid_to_filepaths = {
         entry['id']:d['filepath'] for entry in config for d in entry['data']
         if d['dtype']=='multiplex'
@@ -175,7 +173,7 @@ def get_learner_data(config, scale, size, patch_size, channels=None, channel_map
 
     logging.info('processing sections')
     section_to_img = get_section_to_image(
-        sid_to_filepaths, channels, channel_mapping=channel_mapping, scale=scale)
+        sid_to_filepaths, channels, channel_mapping=channel_mapping, scale=scale, contrast_pct=contrast_pct)
 
     means = torch.cat(
         [x.mean(dim=(-2, -1)).unsqueeze(0) for x in section_to_img.values()]
@@ -220,10 +218,8 @@ class MultiplexTrainingTransform(object):
             normalize if normalize is not None else nn.Identity()
         ])
 
-    def __call__(self, anchor, pos, neg):
-        anchor, pos = self.transforms(torch.stack((anchor, pos)))
-        neg = self.transforms(neg)
-        return torch.stack((anchor, pos, neg))
+    def __call__(self, tile):
+        return self.transforms(tile)
     
 
 class MultiplexSectionDataset(Dataset):
@@ -237,29 +233,12 @@ class MultiplexSectionDataset(Dataset):
         return np.iinfo(np.int64).max # make infinite
 
     def __getitem__(self, idx):
-        anchor_section = np.random.choice(self.sections)
-        anchor_idx = self.sections.index(anchor_section)
+        section = np.random.choice(self.sections)
+        idx = self.sections.index(section)
 
-        if anchor_idx == 0:
-            pos_idx = 1
-        elif anchor_idx == len(self.sections) - 1:
-            pos_idx = anchor_idx - 1
-        else:
-            pos_idx = np.random.choice([anchor_idx - 1, anchor_idx + 1])
-        pos_section = self.sections[pos_idx]
-
-        neg_section = np.random.choice(self.sections)
-        neg_idx = self.sections.index(anchor_section)
-
-        anchor_img, pos_img, neg_img = self.transform(
-            *[self.section_to_img[section] for section in [anchor_section, pos_section, neg_section]]
-        )
+        tile = self.transform(self.section_to_img[section])
 
         return {
-            'anchor_idx': anchor_idx,
-            'pos_idx': pos_idx,
-            'neg_idx': neg_idx,
-            'anchor_img': anchor_img,
-            'pos_img': pos_img,
-            'neg_img': neg_img,
+            'idx': idx,
+            'tile': tile,
         }

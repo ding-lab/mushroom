@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Iterable
 
 import torch
 from torch import nn
@@ -7,6 +8,8 @@ from einops import repeat, rearrange
 from einops.layers.torch import Rearrange
 from vit_pytorch.vit import Transformer
 from vector_quantize_pytorch import VectorQuantize
+# from mushroom.model.vector_quantization import VectorQuantize
+from vector_quantize_pytorch.vector_quantize_pytorch import gumbel_sample
 from timm import create_model
 
 from mushroom.model.expression_reconstruction import ZinbReconstructor
@@ -17,15 +20,15 @@ class SAEargs:
     size: int = 256
     patch_size: int = 32
     encoder_dim: int = 1024
+    decoder_dims: Iterable = (1024, 1024, 1024 * 4,)
     encoder_depth: int = 6
     heads: int = 8
     mlp_dim: int = 2048
     num_classes: int = 1000
-    decoder_dim: int = 512
-    decoder_depth: int = 6
-    decoder_dim_head: int = 64
-    triplet_scaler: float = 1.
+    codebook_size: int = 30
+    kl_scaler: float = .001
     recon_scaler: float = 1.
+    neigh_scaler: float = 1.
 
 
 class SAE(nn.Module):
@@ -33,24 +36,22 @@ class SAE(nn.Module):
         self,
         *,
         encoder,
-        decoder_dim,
         n_slides,
-        decoder_type = 'pixels',
-        decoder_depth = 1,
-        decoder_heads = 8,
-        decoder_dim_head = 64,
-        triplet_scaler = 1.,
+        n_channels,
+        codebook_size = 100,
+        decoder_dims = (1024, 1024, 1024 * 4,),
+        kl_scaler = .001,
         recon_scaler = 1.,
+        neigh_scaler = 1.,
     ):
         super().__init__()
-        self.decoder_type = decoder_type
-
-        # extract some hyperparameters and functions from encoder (vision transformer to be trained)
-
-        self.triplet_scaler = triplet_scaler
+        self.kl_scaler = kl_scaler
         self.recon_scaler = recon_scaler
+        self.neigh_scaler = neigh_scaler
 
         self.encoder = encoder
+        self.decoder_dims = decoder_dims
+        self.n_channels = n_channels
         num_patches, encoder_dim = encoder.pos_embedding.shape[-2:]
 
         self.n_slides = n_slides
@@ -59,40 +60,48 @@ class SAE(nn.Module):
         self.to_patch = encoder.to_patch_embedding[0]
         self.patch_to_emb = nn.Sequential(*encoder.to_patch_embedding[1:])
 
-        pixel_values_per_patch = encoder.to_patch_embedding[2].weight.shape[-1]
+        # pixel_values_per_patch = encoder.to_patch_embedding[2].weight.shape[-1]
 
-        # decoder parameters
-        self.decoder_dim = decoder_dim
-        # self.enc_to_dec = nn.Linear(encoder_dim, decoder_dim) if encoder_dim != decoder_dim else nn.Identity()
-        self.enc_to_dec = nn.Linear(encoder_dim, decoder_dim)
-        self.decoder = Transformer(dim = decoder_dim, depth = decoder_depth, heads = decoder_heads, dim_head = decoder_dim_head, mlp_dim = decoder_dim * 4)
-        self.decoder_pos_emb = nn.Embedding(num_patches + 1, decoder_dim)
-
-        if self.decoder_type == 'zinb':
-            self.to_pixels = ZinbReconstructor(decoder_dim, pixel_values_per_patch, n_metagenes=20)
-        else:
-            self.to_pixels = nn.Linear(decoder_dim, pixel_values_per_patch)
-        
-        n = int((num_patches - 1)**.5)
-        self.repatch = Rearrange('b (h w) d -> b h w d', h=n, w=n)
+        blocks = []
+        for i, dim in enumerate(decoder_dims):
+            if i == 0:
+                block = nn.Sequential(
+                    nn.Linear(encoder_dim, dim),
+                    nn.ReLU()
+                )
+            else:
+                block = nn.Sequential(
+                    nn.Linear(decoder_dims[i - 1], dim),
+                    nn.ReLU()
+                )
+            blocks.append(block)
+        blocks.append(nn.Sequential(
+            nn.Sequential(
+                nn.Linear(decoder_dims[-1], n_channels),
+            )
+        ))
+        self.decoder = nn.Sequential(*blocks)
 
         self.latent_mu = nn.Linear(encoder_dim, encoder_dim)
         self.latent_var = nn.Linear(encoder_dim, encoder_dim)
         self.latent_norm = nn.BatchNorm1d(num_patches)
 
-        # self.latent_mu = nn.Conv2d(in_channels=out_channels, out_channels=out_channels,
-        #                            kernel_size=1)
-        # self.latent_var = nn.Conv2d(in_channels=out_channels, out_channels=out_channels,
-        #                             kernel_size=1)
-        # self.latent_norm = nn.BatchNorm2d(out_channels)
-
-        # codebook_size = 100
-        # self.vq = VectorQuantize(
-        #     dim = encoder_dim,
-        #     codebook_size = codebook_size,     # codebook size
-        #     # use_cosine_sim = True,
-        #     orthogonal_reg_weight = 5,
+        self.vq = VectorQuantize(
+            dim = encoder_dim,
+            codebook_size = codebook_size,     # codebook size
+        )
+        # self.codebook = torch.nn.Parameter(torch.rand(codebook_size, encoder_dim))
+        # self.to_cluster_logits = torch.nn.Sequential(
+        #     torch.nn.Linear(encoder_dim, encoder_dim),
+        #     torch.nn.ReLU(),
+        #     torch.nn.Linear(encoder_dim, 100),
+        #     torch.nn.ReLU(),
+        #     torch.nn.Linear(100, 100),
+        #     torch.nn.ReLU(),
+        #     torch.nn.Linear(100, codebook_size),
         # )
+
+        self.scale_factors = nn.Embedding(self.n_slides, n_channels)
 
     def _kl_divergence(self, z, mu, std):
         # lightning imp.
@@ -113,15 +122,11 @@ class SAE(nn.Module):
         device = img.device
 
         # get patches
-        # print('img', img.shape)
         patches = self.to_patch(img) # b (h w) (p1 p2 c)
-        # print('patches', patches.shape)
         batch, num_patches, *_ = patches.shape
 
         # patch to encoder tokens and add positions
-
         tokens = self.patch_to_emb(patches)
-        # print('tokens', tokens.shape)
 
         # add slide emb
         slide_tokens = self.slide_embedding(slides) # b d
@@ -132,15 +137,12 @@ class SAE(nn.Module):
         tokens += self.encoder.pos_embedding[:, 1:(num_patches + 1)]
 
         # add slide token
-
         tokens = torch.cat((slide_tokens, tokens), dim=1)
 
         # attend with vision transformer
-
         encoded_tokens = self.encoder.transformer(tokens)
 
         # encoded_tokens = self.latent_norm(encoded_tokens)
-
         mu, log_var = self.latent_mu(encoded_tokens), self.latent_var(encoded_tokens)
         
         # sample z from parameterized distributions
@@ -155,86 +157,114 @@ class SAE(nn.Module):
         return z, mu, std
 
     
-    # def quantize(self, encoded_tokens):
-    #     # vector quantize
-    #     slide_token, patch_tokens = encoded_tokens[:, :1], encoded_tokens[:, 1:]
-    #     patch_tokens, indices, commit_loss = self.vq(patch_tokens)
-    #     encoded_tokens = torch.cat((slide_token, patch_tokens), dim=1)
+    def quantize(self, encoded_tokens):
+        # vector quantize
+        slide_token, patch_tokens = encoded_tokens[:, :1], encoded_tokens[:, 1:]
+        patch_tokens, indices, commit_loss = self.vq(patch_tokens)
+        # print(indices.shape, hots.shape)
+        # hots = rearrange(hots, '1 (b n) c -> b n c', b=indices.shape[0])
+        encoded_tokens = torch.cat((slide_token, patch_tokens), dim=1)
 
-    #     return encoded_tokens, indices, commit_loss
+        return encoded_tokens, indices, commit_loss
     
-    def decode(self, encoded_tokens):
-        device = encoded_tokens.device
+    # def quantize(self, encoded_tokens):
+    #     slide_token, patch_tokens = encoded_tokens[:, :1], encoded_tokens[:, 1:]
+    #     logits = self.to_cluster_logits(patch_tokens)
+    #     probs = F.softmax(logits, dim=-1)
+    #     hots = F.gumbel_softmax(logits, hard=True)
+
+    #     embs = hots @ self.codebook
+    #     encoded_tokens = torch.cat((slide_token, embs), dim=1)
+    #     return encoded_tokens, probs, hots, hots.argmax(dim=-1)
+    
+    def decode(self, encoded_tokens, slide, scale=True):
         
-        # project encoder to decoder dimensions, if they are not equal - the paper says you can get away with a smaller dimension for decoder
+        pred_pixel_values = self.decoder(encoded_tokens[:, 1:])
 
-        decoder_tokens = self.enc_to_dec(encoded_tokens)
+        if scale:
+            # pass
+            scale_factors = rearrange(self.scale_factors(slide), 'b d -> b 1 d')
+            # pred_pixel_values = F.sigmoid(pred_pixel_values) * scale_factors
+            # pred_pixel_values = pred_pixel_values.clamp(0) * scale_factors
+            pred_pixel_values = pred_pixel_values * scale_factors
 
-        decoder_tokens += self.decoder_pos_emb(torch.arange(decoder_tokens.shape[1], device=device))
-
-        decoded_tokens = self.decoder(decoder_tokens)
-
-        return decoded_tokens
+        return pred_pixel_values
 
 
-    def forward(self, imgs, slides, use_means=False):
+    def forward(self, img, slide, use_means=False):
         """
-        imgs - (n b c h w)
-          + n=3, first image is anchor tile, second image is positive tile, third image is negative tile
         """
         outputs = []
-        recon_loss = 0
-        kl_loss = 0
-        for i, (img, slide) in enumerate(zip(imgs, slides)):
-            encoded_tokens, mu, std  = self.encode(img, slide, use_means=use_means)
 
-            decoded_tokens = self.decode(encoded_tokens)
+        encoded_tokens_prequant, mu, std  = self.encode(img, slide, use_means=use_means)
 
-            pred_pixel_values = self.to_pixels(decoded_tokens[:, 1:])
+        # encoded_tokens, probs, hots, clusters = self.quantize(encoded_tokens_prequant)
+        encoded_tokens, clusters, _ = self.quantize(encoded_tokens_prequant)
 
-            loss = F.mse_loss(pred_pixel_values, self.to_patch(img))
+        pred_pixel_values = self.decode(encoded_tokens, slide) # (b, n, channels)
 
-            recon_loss += loss
-            kl_loss += torch.mean(self._kl_divergence(encoded_tokens, mu, std))
+        # (b c h w)
+        patches = rearrange(img, 'b c (h p1) (w p2) -> b (h w) (p1 p2) c',
+                            p1=self.to_patch.axes_lengths['p1'], p2=self.to_patch.axes_lengths['p2'])
+        patches = patches.mean(-2)
+        recon_loss = F.mse_loss(pred_pixel_values, patches) # (b, n, channels)
+        kl_loss = torch.mean(self._kl_divergence(encoded_tokens_prequant, mu, std))
 
-            outputs.append({
-                'encoded_tokens': encoded_tokens,
-                'decoded_tokens': decoded_tokens,
-                'pred_pixel_values': pred_pixel_values,
-                'recon_loss': loss
-            })
-        recon_loss /= len(imgs)
-        kl_loss /= len(imgs)
+        outputs = {
+            'encoded_tokens_prequant': encoded_tokens_prequant,
+            'encoded_tokens': encoded_tokens,
+            'pred_pixel_values': pred_pixel_values,
+            # 'cluster_probs': hots,
+            'clusters': clusters,
+        }
 
-        # idxs = torch.arange(1, outputs[0]['encoded_tokens'].shape[1])
-        # idxs = idxs[torch.randperm(idxs.shape[0])]
-        # neg_idxs = idxs[torch.randperm(idxs.shape[0])]
+        anchor_embs, pos_embs = encoded_tokens.chunk(2)
+        token_idxs = torch.randint(anchor_embs.shape[1], (anchor_embs.shape[0],))
+        neg_idxs = torch.randint(anchor_embs.shape[1], (anchor_embs.shape[0],))
+
+        pred = anchor_embs[torch.arange(anchor_embs.shape[0]), token_idxs]
+        target = pos_embs[torch.arange(pos_embs.shape[0]), token_idxs]
+        pos_loss = F.cosine_embedding_loss(pred, target, torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
+
+        pred = anchor_embs[torch.arange(anchor_embs.shape[0]), neg_idxs]
+        target = encoded_tokens[torch.randperm(encoded_tokens.shape[0])[:anchor_embs.shape[0]], neg_idxs]
+        neg_loss = F.cosine_embedding_loss(pred, target, -torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
+
+        neigh_loss = pos_loss
+
+
+        # ## TODO: try targets as ints and try switching idxs on neg loss and try neg slide only on positive
+
+        # # anchor are first half, pos are second half
+        # # anchor_probs, pos_probs = probs.chunk(2)
+        # anchor_probs, pos_probs = hots.chunk(2)
         
-        # anchor_embs = outputs[0]['encoded_tokens'][:, idxs]
-        # pos_embs = outputs[1]['encoded_tokens'][:, idxs]
-        # neg_embs = outputs[2]['encoded_tokens'][:, neg_idxs]
-        # anchor_embs = rearrange(anchor_embs, 'b n d -> (b n) d')
-        # pos_embs = rearrange(pos_embs, 'b n d -> (b n) d')
-        # neg_embs = rearrange(neg_embs, 'b n d -> (b n) d')
+        # token_idxs = torch.randint(anchor_probs.shape[1], (anchor_probs.shape[0],))
+        # neg_idxs = torch.randint(anchor_probs.shape[1], (anchor_probs.shape[0],))
 
+        # # anchor -> pos
+        # pred = anchor_probs[torch.arange(anchor_probs.shape[0]), token_idxs]
+        # target = pos_probs[torch.arange(pos_probs.shape[0]), token_idxs]
+        # pos_loss = F.cross_entropy(pred, target)
 
+        # # anchor -> neg
+        # pred = anchor_probs[torch.arange(anchor_probs.shape[0]), neg_idxs]
+        # target = hots[torch.randperm(hots.shape[0])[:anchor_probs.shape[0]], neg_idxs]
 
+        # neg_loss = F.cross_entropy(pred, target)
 
-        # pos = F.cosine_embedding_loss(anchor_embs, pos_embs, torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
-        # neg = F.cosine_embedding_loss(anchor_embs, neg_embs, -torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
-        # triplet_loss = pos + neg
+        # # neigh_loss = pos_loss - neg_loss
+        # neigh_loss = pos_loss
+        overall_loss = recon_loss * self.recon_scaler + kl_loss * self.kl_scaler + neigh_loss * self.neigh_scaler
 
-        # overall_loss = triplet_loss * self.triplet_scaler + recon_loss * self.recon_scaler
-        overall_loss = recon_loss * self.recon_scaler + kl_loss * self.triplet_scaler
-
-
+        # overall_loss = recon_loss * self.recon_scaler + kl_loss * self.kl_scaler
         losses = {
             'overall_loss': overall_loss,
             'recon_loss': recon_loss,
-            'triplet_loss': kl_loss,
-            # 'commit_loss': vq_loss[0],
-            # 'neighbor_loss': neighbor_loss
+            'kl_loss': kl_loss,
+            'neigh_loss': neigh_loss,
+            'pos_loss': pos_loss,
+            'neg_loss': neg_loss,
         }
-        
 
         return losses, outputs

@@ -86,8 +86,8 @@ class InferenceSectionDataset(Dataset):
         section_idx, row_idx, col_idx = self.idx_to_coord[idx]
         section = self.sections[section_idx]
         return {
-            'section_idx': section_idx,
+            'idx': section_idx,
             'row_idx': row_idx,
             'col_idx': col_idx,
-            'img': self.transform(self.section_to_tiles[section][row_idx, col_idx])
+            'tile': self.transform(self.section_to_tiles[section][row_idx, col_idx])
         }

@@ -10,8 +10,7 @@ from vit_pytorch import ViT
 
 import mushroom.data.multiplex as multiplex
 import mushroom.data.visium as visium
-# from mushroom.model.sae import SAE, SAEargs
-from mushroom.model.sae_v2 import SAE, SAEargs
+from mushroom.model.sae import SAE, SAEargs
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -31,6 +30,7 @@ class SAELearner(object):
             sae_args=SAEargs(), # args for ViT
             device=None,
             pct_expression=.02, # channels with % of spots expressing < will be removed
+            contrast_pct=90.,
             ):
         self.config = config
         self.dtype = dtype
@@ -48,7 +48,7 @@ class SAELearner(object):
         if self.dtype == 'multiplex':
             learner_data = multiplex.get_learner_data(
                 self.config, self.scale, self.size, self.sae_args.patch_size,
-                channels=channels, channel_mapping=self.channel_mapping
+                channels=channels, channel_mapping=self.channel_mapping, contrast_pct=contrast_pct,
             )
         elif self.dtype == 'he':
             pass
@@ -90,12 +90,11 @@ class SAELearner(object):
 
         self.sae = SAE(
             encoder=encoder,
-            decoder_type='pixels',
-            decoder_dim=self.sae_args.decoder_dim,
             n_slides=len(self.section_to_img),
-            decoder_depth=self.sae_args.decoder_depth,
-            decoder_dim_head=self.sae_args.decoder_dim_head,
-            triplet_scaler=self.sae_args.triplet_scaler,
+            n_channels=len(self.channels),
+            decoder_dims=self.sae_args.decoder_dims,
+            codebook_size=self.sae_args.codebook_size,
+            kl_scaler=self.sae_args.kl_scaler,
             recon_scaler=self.sae_args.recon_scaler,
         )
 
@@ -116,11 +115,10 @@ class SAELearner(object):
 
         for i, b in enumerate(self.train_dl):
             opt.zero_grad()
-            img_x = torch.stack((b['anchor_img'], b['pos_img'], b['neg_img']))
-            section_x = torch.stack((b['anchor_idx'], b['pos_idx'], b['neg_idx']))
-            img_x, section_x = img_x.to(device), section_x.to(device)
+            x, section = b['tile'], b['idx']
+            x, section = x.to(device), section.to(device)
 
-            losses, outputs = self.sae(img_x, section_x)
+            losses, outputs = self.sae(x, section)
             loss = losses['overall_loss']
             loss.backward()
             opt.step()
@@ -153,44 +151,36 @@ class SAELearner(object):
             n, num_patches, num_patches, self.sae.encoder.pos_embedding.shape[-1])
         embs_prequant = torch.zeros(
             n, num_patches, num_patches, self.sae.encoder.pos_embedding.shape[-1])
-        # pred_patches = torch.zeros(n, len(self.channels), self.size[0], self.size[1])
-        pred_patches = torch.zeros(n, len(self.channels), self.train_transform.output_size[0], self.train_transform.output_size[1])
+        # pred_patches = torch.zeros(n, len(self.channels), self.train_transform.output_size[0], self.train_transform.output_size[1])
+        pred_patches = torch.zeros(n, len(self.channels), num_patches, num_patches)
 
         bs = self.inference_dl.batch_size
         self.sae.eval()
         with torch.no_grad():
             for i, b in enumerate(self.inference_dl):
-                x, section_idx = b['img'], b['section_idx']
-                x, section_idx = x.to(device), section_idx.to(device)
-                encoded_tokens, mu, std = self.sae.encode(x, section_idx, use_means=True)
+                x, slide = b['tile'], b['idx']
+                x, slide = x.to(device), slide.to(device)
+                prequant_tokens, mu, std = self.sae.encode(x, slide, use_means=True)
+                encoded_tokens, _, _ = self.sae.quantize(prequant_tokens)
 
-                # prequant_tokens = self.sae.encode(x, section_idx)
-                # encoded_tokens, indices, _ = self.sae.quantize(prequant_tokens)
+                pred_pixel_values = self.sae.decode(encoded_tokens, slide, scale=True)
 
-                
-                decoded_tokens = self.sae.decode(encoded_tokens)
-                pred_pixel_values = self.sae.to_pixels(decoded_tokens[:, 1:])
-                # if self.dtype in ['visium']:
-                #     pred_pixel_values = pred_pixel_values['exp']
-
-
-                # prequant_tokens = rearrange(prequant_tokens[:, 1:], 'b (h w) d -> b h w d',
-                #                         h=num_patches, w=num_patches)
                 encoded_tokens = rearrange(encoded_tokens[:, 1:], 'b (h w) d -> b h w d',
                                         h=num_patches, w=num_patches)
+                prequant_tokens = rearrange(prequant_tokens[:, 1:], 'b (h w) d -> b h w d',
+                                        h=num_patches, w=num_patches)
                 pred_pixel_values = rearrange(
-                    pred_pixel_values, 'b (h w) (p1 p2 c) -> b c (h p1) (w p2)',
+                    pred_pixel_values, 'b (h w) c -> b c h w',
                     h=num_patches, w=num_patches,
-                    p1=self.train_transform.output_patch_size, p2=self.train_transform.output_patch_size,
-                    # p1=self.sae_args.patch_size, p2=self.sae_args.patch_size,
                     c=len(self.channels))
                 
-                # embs_prequant[i * bs:(i + 1) * bs] = prequant_tokens.cpu().detach()
                 embs[i * bs:(i + 1) * bs] = encoded_tokens.cpu().detach()
+                embs_prequant[i * bs:(i + 1) * bs] = prequant_tokens.cpu().detach()
                 pred_patches[i * bs:(i + 1) * bs] = pred_pixel_values.cpu().detach()
         recon_imgs = torch.stack(
             [self.inference_ds.section_from_tiles(
-                pred_patches, i, size=(self.train_transform.output_size[0], self.train_transform.output_size[1])
+                pred_patches, i, size=(num_patches, num_patches)
+                # pred_patches, i, size=(self.train_transform.output_size[0], self.train_transform.output_size[1])
             ) for i in range(len(self.inference_ds.sections))]
         )
         recon_embs = torch.stack(
@@ -199,71 +189,11 @@ class SAELearner(object):
                 i, size=(num_patches, num_patches))
                 for i in range(len(self.inference_ds.sections))] 
         )
-        # recon_embs_prequant = torch.stack(
-        #     [self.inference_ds.section_from_tiles(
-        #         rearrange(embs_prequant, 'n h w c -> n c h w'),
-        #         i, size=(num_patches, num_patches))
-        #         for i in range(len(self.inference_ds.sections))] 
-        # )
-        recon_embs = self.regress_patch_position(recon_embs)
-
-        # return recon_imgs, recon_embs, recon_embs_prequant
-        return recon_imgs, recon_embs, None
-    
-    def regress_patch_position(
-            self,
-            recon_embs # (n_sections, n_channels, height, width)
-        ):
-        target = rearrange(recon_embs, 'n c h w -> n h w c').numpy()
-        num_patches = self.size[0] // self.sae_args.patch_size
-
-        # get patch positions
-        rc = torch.zeros(
-            self.inference_ds.idx_to_coord.shape[0], num_patches, num_patches,
-            dtype=torch.long
-        )
-        idx_to_var = [(r, c) for r in range(rc.shape[1]) for c in range(rc.shape[2])]
-        var_to_idx = {v:i for i, v in enumerate(idx_to_var)}
-        for i in range(self.inference_ds.idx_to_coord.shape[0]):
-            for r in range(rc.shape[1]):
-                for c in range(rc.shape[2]):
-                    rc[i, r, c] = var_to_idx[(r, c)]
-        hots = torch.nn.functional.one_hot(rc)
-
-        # retile to same positions as recon_embs
-        X_coords = torch.stack(
+        recon_embs_prequant = torch.stack(
             [self.inference_ds.section_from_tiles(
-                rearrange(hots, 'n h w c -> n c h w'),
+                rearrange(embs_prequant, 'n h w c -> n c h w'),
                 i, size=(num_patches, num_patches))
-            for i in range(len(self.inference_ds.sections))]
-        )
-        X_coords = rearrange(X_coords, 'b c h w -> b h w c')
-        
-        # get sections
-        X_sections = repeat(
-            torch.arange(len(self.inference_ds.sections)),
-            'b -> b h w', h=target.shape[1], w=target.shape[2]
-        )
-        X_sections = torch.nn.functional.one_hot(X_sections)
-
-        # combine features
-        X = torch.cat((X_coords, X_sections), dim=-1).numpy()
-
-        # reshape for sklearn
-        target = rearrange(target, 'b h w c -> (b h w) c')
-        X = rearrange(X, 'b h w c -> (b h w) c')
-
-        # fit linear model
-        lm = LinearRegression()
-        lm.fit(X, target)
-
-        # get residuals
-        residuals = lm.predict(X) - target
-
-        # to original shape
-        embs_regressed = rearrange(
-            residuals, '(b h w) c -> b c h w',
-            b=X_coords.shape[0], h=X_coords.shape[1], w=X_coords.shape[2]
+                for i in range(len(self.inference_ds.sections))] 
         )
 
-        return torch.tensor(embs_regressed)
+        return recon_imgs, recon_embs, recon_embs_prequant

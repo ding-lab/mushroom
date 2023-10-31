@@ -48,16 +48,16 @@ class Mushroom(object):
         )
 
         if self.dtype in ['visium']:
-            # self.true_imgs = torch.cat(
-            #     [format_expression(
-            #         img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
-            #     ) for sid, img in zip(self.section_ids, self.true_imgs)]
-            # )
-            self.true_imgs = torch.stack(
+            self.true_imgs = torch.cat(
                 [format_expression(
                     img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
-                ) / rearrange(self.learner.inference_ds.section_to_adata[sid].X.max(0), 'n -> n 1 1') for sid, img in zip(self.section_ids, self.true_imgs)]
+                ) for sid, img in zip(self.section_ids, self.true_imgs)]
             )
+            # self.true_imgs = torch.stack(
+            #     [format_expression(
+            #         img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
+            #     ) / rearrange(self.learner.inference_ds.section_to_adata[sid].X.max(0), 'n -> n 1 1') for sid, img in zip(self.section_ids, self.true_imgs)]
+            # )
             # self.true_imgs = torch.stack(
             #     [format_expression(
             #         img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
@@ -165,7 +165,6 @@ class Mushroom(object):
             raise RuntimeError('Must either train model or load a model checkpoint. To train, run .train()')
 
         self.recon_imgs, self.recon_embs, self.recon_embs_prequant = self.learner.embed_sections()
-        # self.recon_imgs, self.recon_embs = self.learner.embed_sections()
 
     def cluster_sections(self, recluster=True, **kwargs):
         self.cluster_kwargs.update(kwargs)
