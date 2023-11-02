@@ -11,6 +11,8 @@ pip install -e https://github.com/ding-lab/mushroom
 
 ### Analyses
 
+[Registration with BigWarp DDF](https://github.com/ding-lab/mushroom/blob/subclone_submission/notebooks/projects/subclone_paper/step2_apply_ddfs.ipynb)
+
 [Model training](https://github.com/ding-lab/mushroom/blob/subclone_submission/notebooks/projects/subclone_paper/step6_run_mushroom_dup.ipynb)
 
 [Data analysis HT268B1](https://github.com/ding-lab/mushroom/blob/subclone_submission/notebooks/projects/subclone_paper/step7_analysis_v2.ipynb)
