@@ -4,6 +4,7 @@ from typing import Iterable
 import torch
 from torch import nn
 import torch.nn.functional as F
+import torchvision.transforms.functional as TF
 from einops import repeat, rearrange
 from einops.layers.torch import Rearrange
 from vit_pytorch.vit import Transformer
@@ -53,6 +54,7 @@ class SAE(nn.Module):
         self.decoder_dims = decoder_dims
         self.n_channels = n_channels
         num_patches, encoder_dim = encoder.pos_embedding.shape[-2:]
+        self.num_patches = num_patches
 
         self.n_slides = n_slides
         self.slide_embedding = nn.Embedding(self.n_slides, encoder_dim)
@@ -207,7 +209,13 @@ class SAE(nn.Module):
         patches = rearrange(img, 'b c (h p1) (w p2) -> b (h w) (p1 p2) c',
                             p1=self.to_patch.axes_lengths['p1'], p2=self.to_patch.axes_lengths['p2'])
         patches = patches.mean(-2)
-        recon_loss = F.mse_loss(pred_pixel_values, patches) # (b, n, channels)
+
+        # recon_loss = F.mse_loss(pred_pixel_values, patches) # (b, n, channels)
+        recon_loss = F.cosine_embedding_loss(
+            rearrange(pred_pixel_values, 'b n c -> (b n) c'),
+            rearrange(patches, 'b n c -> (b n) c'),
+            torch.ones(rearrange(patches, 'b n c -> (b n) c').shape[0], device=pred_pixel_values.device)
+        ) # (b, n, channels)
         kl_loss = torch.mean(self._kl_divergence(encoded_tokens_prequant, mu, std))
 
         outputs = {
@@ -220,51 +228,19 @@ class SAE(nn.Module):
 
         anchor_embs, pos_embs = encoded_tokens.chunk(2)
         token_idxs = torch.randint(anchor_embs.shape[1], (anchor_embs.shape[0],))
-        neg_idxs = torch.randint(anchor_embs.shape[1], (anchor_embs.shape[0],))
 
         pred = anchor_embs[torch.arange(anchor_embs.shape[0]), token_idxs]
         target = pos_embs[torch.arange(pos_embs.shape[0]), token_idxs]
-        pos_loss = F.cosine_embedding_loss(pred, target, torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
+        neigh_loss = F.cosine_embedding_loss(pred, target, torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
 
-        pred = anchor_embs[torch.arange(anchor_embs.shape[0]), neg_idxs]
-        target = encoded_tokens[torch.randperm(encoded_tokens.shape[0])[:anchor_embs.shape[0]], neg_idxs]
-        neg_loss = F.cosine_embedding_loss(pred, target, -torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
-
-        neigh_loss = pos_loss
-
-
-        # ## TODO: try targets as ints and try switching idxs on neg loss and try neg slide only on positive
-
-        # # anchor are first half, pos are second half
-        # # anchor_probs, pos_probs = probs.chunk(2)
-        # anchor_probs, pos_probs = hots.chunk(2)
-        
-        # token_idxs = torch.randint(anchor_probs.shape[1], (anchor_probs.shape[0],))
-        # neg_idxs = torch.randint(anchor_probs.shape[1], (anchor_probs.shape[0],))
-
-        # # anchor -> pos
-        # pred = anchor_probs[torch.arange(anchor_probs.shape[0]), token_idxs]
-        # target = pos_probs[torch.arange(pos_probs.shape[0]), token_idxs]
-        # pos_loss = F.cross_entropy(pred, target)
-
-        # # anchor -> neg
-        # pred = anchor_probs[torch.arange(anchor_probs.shape[0]), neg_idxs]
-        # target = hots[torch.randperm(hots.shape[0])[:anchor_probs.shape[0]], neg_idxs]
-
-        # neg_loss = F.cross_entropy(pred, target)
-
-        # # neigh_loss = pos_loss - neg_loss
-        # neigh_loss = pos_loss
         overall_loss = recon_loss * self.recon_scaler + kl_loss * self.kl_scaler + neigh_loss * self.neigh_scaler
 
-        # overall_loss = recon_loss * self.recon_scaler + kl_loss * self.kl_scaler
         losses = {
             'overall_loss': overall_loss,
             'recon_loss': recon_loss,
             'kl_loss': kl_loss,
             'neigh_loss': neigh_loss,
             'pos_loss': pos_loss,
-            'neg_loss': neg_loss,
         }
 
         return losses, outputs
