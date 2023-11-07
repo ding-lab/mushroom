@@ -13,7 +13,6 @@ from skimage.exposure import rescale_intensity
 from tifffile import TiffFile
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, Normalize, RandomCrop, Compose
-from vit_pytorch import ViT
 
 from mushroom.data.inference import InferenceTransform, InferenceSectionDataset
 from mushroom.data.utils import LearnerData
@@ -218,14 +217,15 @@ class MultiplexTrainingTransform(object):
             normalize if normalize is not None else nn.Identity()
         ])
 
-    def __call__(self, tile):
-        return self.transforms(tile)
+    def __call__(self, tiles):
+        return self.transforms(tiles)
     
 
 class MultiplexSectionDataset(Dataset):
     def __init__(self, sections, section_to_img, transform=None):
         self.sections = sections
         self.section_to_img = section_to_img
+        self.stacked = torch.stack([section_to_img[section] for section in sections])
 
         self.transform = transform if transform is not None else nn.Identity()
 
@@ -233,12 +233,26 @@ class MultiplexSectionDataset(Dataset):
         return np.iinfo(np.int64).max # make infinite
 
     def __getitem__(self, idx):
-        section = np.random.choice(self.sections)
-        idx = self.sections.index(section)
+        anchor_section = np.random.choice(self.sections)
+        anchor_idx = self.sections.index(anchor_section)
 
-        tile = self.transform(self.section_to_img[section])
+        if anchor_idx == 0:
+            pos_idx = 1
+        elif anchor_idx == len(self.sections) - 1:
+            pos_idx = anchor_idx - 1
+        else:
+            pos_idx = np.random.choice([anchor_idx - 1, anchor_idx + 1])
+        pos_section = self.sections[pos_idx]
+
+        start = min(anchor_idx, pos_idx)
+
+        anchor_tile, pos_tile = self.transform(
+            self.stacked[start:start + 2]
+        )
 
         return {
-            'idx': idx,
-            'tile': tile,
+            'anchor_idx': anchor_idx,
+            'pos_idx': pos_idx,
+            'anchor_tile': anchor_tile,
+            'pos_tile': pos_tile,
         }

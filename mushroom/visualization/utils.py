@@ -38,8 +38,6 @@ def calculate_target_visualization_shape(config, output_data, pixels_per_micron=
 
     return target_shape
 
-
-
  
 def display_sections(config, multiplex_cmap=None, gene='EPCAM', dtype_order=None):
     def rescale(x, scale=.1):

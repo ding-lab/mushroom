@@ -4,13 +4,9 @@ from typing import Iterable
 import torch
 from torch import nn
 import torch.nn.functional as F
+import torchvision.transforms.functional as TF
 from einops import repeat, rearrange
-from einops.layers.torch import Rearrange
-from vit_pytorch.vit import Transformer
 from vector_quantize_pytorch import VectorQuantize
-from timm import create_model
-
-from mushroom.model.expression_reconstruction import ZinbReconstructor
 
 
 @dataclass
@@ -23,9 +19,10 @@ class SAEargs:
     heads: int = 8
     mlp_dim: int = 2048
     num_classes: int = 1000
-    codebook_size: int = 100
-    kl_scaler: float = 1.
+    codebook_size: int = 30
+    kl_scaler: float = .001
     recon_scaler: float = 1.
+    neigh_scaler: float = 1.
 
 
 class SAE(nn.Module):
@@ -37,17 +34,20 @@ class SAE(nn.Module):
         n_channels,
         codebook_size = 100,
         decoder_dims = (1024, 1024, 1024 * 4,),
-        kl_scaler = 1.,
+        kl_scaler = .001,
         recon_scaler = 1.,
+        neigh_scaler = .1,
     ):
         super().__init__()
         self.kl_scaler = kl_scaler
         self.recon_scaler = recon_scaler
+        self.neigh_scaler = neigh_scaler
 
         self.encoder = encoder
         self.decoder_dims = decoder_dims
         self.n_channels = n_channels
         num_patches, encoder_dim = encoder.pos_embedding.shape[-2:]
+        self.num_patches = num_patches
 
         self.n_slides = n_slides
         self.slide_embedding = nn.Embedding(self.n_slides, encoder_dim)
@@ -156,7 +156,6 @@ class SAE(nn.Module):
 
         if scale:
             scale_factors = rearrange(self.scale_factors(slide), 'b d -> b 1 d')
-            # pred_pixel_values = F.sigmoid(pred_pixel_values) * scale_factors
             pred_pixel_values = pred_pixel_values * scale_factors
 
         return pred_pixel_values
@@ -164,14 +163,13 @@ class SAE(nn.Module):
 
     def forward(self, img, slide, use_means=False):
         """
-        imgs - (n b c h w)
-          + n=3, first image is anchor tile, second image is positive tile, third image is negative tile
         """
         outputs = []
 
         encoded_tokens_prequant, mu, std  = self.encode(img, slide, use_means=use_means)
 
-        encoded_tokens, _, _ = self.quantize(encoded_tokens_prequant)
+        # encoded_tokens, probs, hots, clusters = self.quantize(encoded_tokens_prequant)
+        encoded_tokens, clusters, _ = self.quantize(encoded_tokens_prequant)
 
         pred_pixel_values = self.decode(encoded_tokens, slide) # (b, n, channels)
 
@@ -179,20 +177,37 @@ class SAE(nn.Module):
         patches = rearrange(img, 'b c (h p1) (w p2) -> b (h w) (p1 p2) c',
                             p1=self.to_patch.axes_lengths['p1'], p2=self.to_patch.axes_lengths['p2'])
         patches = patches.mean(-2)
+
         recon_loss = F.mse_loss(pred_pixel_values, patches) # (b, n, channels)
+        # recon_loss = F.cosine_embedding_loss(
+        #     rearrange(pred_pixel_values, 'b n c -> (b n) c'),
+        #     rearrange(patches, 'b n c -> (b n) c'),
+        #     torch.ones(rearrange(patches, 'b n c -> (b n) c').shape[0], device=pred_pixel_values.device)
+        # ) # (b, n, channels)
         kl_loss = torch.mean(self._kl_divergence(encoded_tokens_prequant, mu, std))
 
         outputs = {
             'encoded_tokens_prequant': encoded_tokens_prequant,
             'encoded_tokens': encoded_tokens,
             'pred_pixel_values': pred_pixel_values,
+            # 'cluster_probs': hots,
+            'clusters': clusters,
         }
 
-        overall_loss = recon_loss * self.recon_scaler + kl_loss * self.kl_scaler
+        anchor_embs, pos_embs = encoded_tokens.chunk(2)
+        token_idxs = torch.randint(anchor_embs.shape[1], (anchor_embs.shape[0],))
+
+        pred = anchor_embs[torch.arange(anchor_embs.shape[0]), token_idxs]
+        target = pos_embs[torch.arange(pos_embs.shape[0]), token_idxs]
+        neigh_loss = F.cosine_embedding_loss(pred, target, torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
+
+        overall_loss = recon_loss * self.recon_scaler + kl_loss * self.kl_scaler + neigh_loss * self.neigh_scaler
+
         losses = {
             'overall_loss': overall_loss,
             'recon_loss': recon_loss,
             'kl_loss': kl_loss,
+            'neigh_loss': neigh_loss,
         }
 
         return losses, outputs

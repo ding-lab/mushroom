@@ -8,13 +8,10 @@ import torch.nn as nn
 import scanpy as sc
 from einops import rearrange
 from torch.utils.data import Dataset
-import torchvision.transforms.functional as TF
-from sklearn.decomposition import PCA
 from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, RandomCrop, Compose, Normalize
 
 from mushroom.data.utils import LearnerData
 from mushroom.data.inference import InferenceSectionDataset
-from mushroom.data.he import read_he
 
 
 def pixels_per_micron(adata):
@@ -229,19 +226,25 @@ class VisiumTrainingTransform(object):
 
         self.normalize = normalize if normalize is not None else nn.Identity()
 
-    def __call__(self, tile, adata):
+    def __call__(self, tiles, adatas):
         """
-        anchor - (n h w), n = 1 if just labeled
+        tile - (n h w)
         """
-        tile = self.transforms(tile)
+        outs = []
+        tiles = self.transforms(tiles).squeeze(0)
 
-        tile = tile.squeeze()
+        for tile, adata in zip(tiles, adatas):
+            # tile = self.transforms(tile)
 
-        tile = format_expression(tile, adata, patch_size=self.patch_size) # expects (h, w)
+            # tile = tile.squeeze()
 
-        tile = self.normalize(tile)
+            tile = format_expression(tile, adata, patch_size=self.patch_size) # expects (h, w)
 
-        return tile
+            tile = self.normalize(tile)
+
+            outs.append(tile)
+
+        return outs
         
     
 class VisiumInferenceTransform(object):
@@ -261,6 +264,7 @@ class VisiumSectionDataset(Dataset):
         self.sections = sections
         self.section_to_adata = section_to_adata
         self.section_to_img = section_to_img # (h w)
+        self.stacked = torch.stack([section_to_img[section] for section in sections])
 
         self.transform = transform if transform is not None else nn.Identity()
         self.means = torch.tensor(self.transform.normalize.mean)
@@ -270,20 +274,29 @@ class VisiumSectionDataset(Dataset):
         return np.iinfo(np.int64).max # make infinite
 
     def __getitem__(self, idx):
-        section = np.random.choice(self.sections)
-        idx = self.sections.index(section)
+        anchor_section = np.random.choice(self.sections)
+        anchor_idx = self.sections.index(anchor_section)
 
-        tile = self.section_to_img[section]
-        adata = self.section_to_adata[section]
+        if anchor_idx == 0:
+            pos_idx = 1
+        elif anchor_idx == len(self.sections) - 1:
+            pos_idx = anchor_idx - 1
+        else:
+            pos_idx = np.random.choice([anchor_idx - 1, anchor_idx + 1])
+        pos_section = self.sections[pos_idx]
 
-        tile = self.transform(tile, adata)
+        start = min(anchor_idx, pos_idx)
 
-        outs = {
-            'idx': idx,
-            'tile': tile,
+        anchor_tile, pos_tile = self.transform(
+            self.stacked[start:start + 2], [self.section_to_adata[self.sections[i]] for i in [start, start + 1]]
+        )
+
+        return {
+            'anchor_idx': anchor_idx,
+            'pos_idx': pos_idx,
+            'anchor_tile': anchor_tile,
+            'pos_tile': pos_tile,
         }
-
-        return outs
 
   
 class VisiumInferenceSectionDataset(InferenceSectionDataset):

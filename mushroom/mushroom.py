@@ -3,15 +3,17 @@ import os
 import pickle
 
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import torch
+import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 import yaml
 from einops import rearrange
+from torchio.transforms import Resize
 
 from mushroom.model.sae import SAEargs
 from mushroom.model.learners import SAELearner
-from mushroom.clustering import EmbeddingClusterer, ClusterArgs
 from mushroom.data.visium import format_expression
 
 
@@ -32,7 +34,6 @@ class Mushroom(object):
         self.sae_kwargs = sae_kwargs
         self.learner_kwargs = learner_kwargs
         self.train_kwargs = train_kwargs
-        self.cluster_kwargs = cluster_kwargs
         self.section_ids = [entry['id'] for entry in self.sections
                        if dtype in [d['dtype'] for d in entry['data']]]
 
@@ -40,37 +41,21 @@ class Mushroom(object):
 
         logging.info('learner initialized')
 
-        # print(self.learner.inference_ds.section_to_tiles[s].shape)
         # make a groundtruth reconstruction for original images
         self.true_imgs = torch.stack(
             [self.learner.inference_ds.image_from_tiles(self.learner.inference_ds.section_to_tiles[s])
             for s in self.learner.inference_ds.sections]
         )
-
         if self.dtype in ['visium']:
-            self.true_imgs = torch.cat(
+            self.true_imgs = torch.stack(
                 [format_expression(
                     img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
                 ) for sid, img in zip(self.section_ids, self.true_imgs)]
             )
-            # self.true_imgs = torch.stack(
-            #     [format_expression(
-            #         img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
-            #     ) / rearrange(self.learner.inference_ds.section_to_adata[sid].X.max(0), 'n -> n 1 1') for sid, img in zip(self.section_ids, self.true_imgs)]
-            # )
-            # self.true_imgs = torch.stack(
-            #     [format_expression(
-            #         img, self.learner.inference_ds.section_to_adata[sid], self.learner.sae_args.patch_size
-            #     ) for sid, img in zip(self.section_ids, self.true_imgs)]
-            # )
-            # print(self.true_imgs.shape)
             
-        self.recon_embs, self.recon_imgs, self.recon_embs_prequant = None, None, None
+        self.recon_embs, self.recon_imgs, self.recon_cluster_ids = None, None, None
 
-        logging.info('initializing clusterer')
-        self.clusterer = self.initialize_clusterer()
-
-        self.dists, self.cluster_ids, self.dists_volume = None, None, None
+        self.cluster_sims, self.cluster_ids, self.scaled_recon_imgs = None, None, None
 
     @staticmethod
     def from_config(mushroom_config):
@@ -83,16 +68,11 @@ class Mushroom(object):
             sae_kwargs=mushroom_config['sae_kwargs'],
             learner_kwargs=mushroom_config['learner_kwargs'],
             train_kwargs=mushroom_config['train_kwargs'],
-            cluster_kwargs=mushroom_config['cluster_kwargs']
         )
     
     def _get_section_imgs(self, args):
-        # if self.recon_imgs is None:
         emb_size = int(self.true_imgs.shape[-2] / self.learner.train_transform.output_patch_size)
         section_imgs = TF.resize(self.true_imgs, (emb_size, emb_size), antialias=True)
-        # else:
-        #     emb_size = int(self.recon_imgs.shape[-2] / self.learner.train_transform.output_patch_size)
-        #     section_imgs = TF.resize(self.recon_imgs, (emb_size, emb_size), antialias=True)
 
         if args.background_channels is None and args.mask_background:
             logging.info('no background channel detected, defaulting to mean of all channels')
@@ -104,6 +84,19 @@ class Mushroom(object):
             section_imgs = None
 
         return section_imgs
+    
+    def _get_cluster_sims(self):
+        x = rearrange(self.recon_embs, 'n c h w -> (n h w) c 1')
+        codebook = self.learner.sae.vq.codebook.t()
+
+        dists = F.cosine_similarity(x, codebook)
+        dists = rearrange(
+            dists, '(n h w) c -> n c h w',
+            n=self.recon_embs.shape[0],
+            h=self.recon_embs.shape[-2],
+            w=self.recon_embs.shape[-1]
+        )
+        return dists
 
     def initialize_learner(self):
         learner = SAELearner(
@@ -117,18 +110,7 @@ class Mushroom(object):
             learner.sae.load_state_dict(torch.load(self.chkpt_filepath))
 
         return learner
-    
-    def initialize_clusterer(self):
-        args = ClusterArgs(**self.cluster_kwargs)
-        section_imgs = self._get_section_imgs(args)
 
-        init = 'k-means++' if args.centroids is None else np.asarray(args.centroids)
-        clusterer = EmbeddingClusterer(
-            n_clusters=args.num_clusters, section_imgs=section_imgs, section_masks=args.section_masks, margin=args.margin, init=init
-        )
-
-        return clusterer
-    
     def save_config(self, filepath): 
         mushroom_config = {
             'dtype': self.dtype,
@@ -137,19 +119,15 @@ class Mushroom(object):
             'sae_kwargs': self.sae_kwargs if self.sae_kwargs is not None else {},
             'learner_kwargs': self.learner_kwargs if self.learner_kwargs is not None else {},
             'train_kwargs': self.train_kwargs if self.train_kwargs is not None else {},
-            'cluster_kwargs': self.cluster_kwargs if self.cluster_kwargs is not None else {},
         }
         yaml.safe_dump(mushroom_config, open(filepath, 'w'))
 
     def save_outputs(self, filepath):
-        centroids = torch.tensor(self.cluster_kwargs['centroids']) if self.cluster_kwargs['centroids'] is not None else None
         obj = {
             'recon_embs': self.recon_embs,
             'recon_imgs': self.recon_imgs,
             'true_imgs': self.true_imgs,
-            'cluster_distances': self.dists,
-            'cluster_distance_volume': self.dists_volume,
-            'cluster_centroids': centroids,
+            'cluster_sims': self.cluster_sims,
             'cluster_ids': self.cluster_ids,
         }
         torch.save(obj, filepath)
@@ -164,38 +142,23 @@ class Mushroom(object):
         if self.chkpt_filepath is None:
             raise RuntimeError('Must either train model or load a model checkpoint. To train, run .train()')
 
-        self.recon_imgs, self.recon_embs, self.recon_embs_prequant = self.learner.embed_sections()
+        self.recon_imgs, self.recon_embs, self.recon_cluster_ids = self.learner.embed_sections()
+        self.recon_cluster_ids = self.recon_cluster_ids.to(torch.long)
 
-    def cluster_sections(self, recluster=True, **kwargs):
-        self.cluster_kwargs.update(kwargs)
-        args = ClusterArgs(**self.cluster_kwargs)
-        section_imgs = self._get_section_imgs(args)
+        self.cluster_sims = self._get_cluster_sims()
 
-        if recluster:
-            init = 'k-means++' if args.centroids is None else args.centroids
-            self.clusterer = EmbeddingClusterer(
-                n_clusters=args.num_clusters, section_imgs=section_imgs, section_masks=args.section_masks, margin=args.margin, init=init
-            )
-            self.dists, self.cluster_ids = self.clusterer.fit_transform(
-                self.recon_embs, mask_background=args.mask_background, add_background_cluster=args.add_background_cluster
-            )
-            self.cluster_kwargs['centroids'] = self.clusterer.kmeans.cluster_centers_.tolist()
-        else:
-            self.dists, self.cluster_ids = self.clusterer.transform(
-                self.recon_embs, add_background_cluster=args.add_background_cluster
-            )
+        scalers = torch.amax(self.recon_imgs, dim=(-2, -1))
+        self.scaled_recon_imgs = self.recon_imgs / rearrange(scalers, 'n c -> n c 1 1')
 
-        section_positions = np.asarray(
-            [entry['position'] for entry in self.sections if entry['id'] in self.section_ids]
-        )
-        if args.span_all_sections:
-            all_positions = np.asarray([entry['position'] for entry in self.sections])
-            section_range = (all_positions.min(), all_positions.max())
-        else:
-            section_range = None
-        self.dists_volume = self.clusterer.interpolate_distances(
-            self.dists, section_positions, section_range=section_range
-        )
+    def get_cluster_intensities(self):
+        data = []
+        x = rearrange(self.scaled_recon_imgs, 'n c h w -> n h w c').clone().detach().cpu().numpy()
+        cluster_ids = self.recon_cluster_ids.clone().detach().cpu().numpy()
+        for cluster in np.unique(cluster_ids):
+            mask = cluster_ids==cluster
+            data.append(x[mask, :].mean(axis=0))
+        df = pd.DataFrame(data=data, columns=self.learner.channels, index=np.unique(cluster_ids))
+        return df
 
     def display_predicted_pixels(self, channel=None, figsize=None):
         if self.recon_imgs is None:

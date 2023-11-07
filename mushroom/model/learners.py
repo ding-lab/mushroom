@@ -4,7 +4,6 @@ import warnings
 
 import torch
 from einops import rearrange, repeat
-from sklearn.linear_model import LinearRegression
 from torch.utils.data import DataLoader
 from vit_pytorch import ViT
 
@@ -96,6 +95,7 @@ class SAELearner(object):
             codebook_size=self.sae_args.codebook_size,
             kl_scaler=self.sae_args.kl_scaler,
             recon_scaler=self.sae_args.recon_scaler,
+            neigh_scaler=self.sae_args.neigh_scaler
         )
 
         self.sae = self.sae.to(self.device)
@@ -115,10 +115,13 @@ class SAELearner(object):
 
         for i, b in enumerate(self.train_dl):
             opt.zero_grad()
-            x, section = b['tile'], b['idx']
-            x, section = x.to(device), section.to(device)
+            anchor_x, anchor_slide = b['anchor_tile'], b['anchor_idx']
+            pos_x, pos_slide = b['pos_tile'], b['pos_idx']
+            x = torch.concat((anchor_x, pos_x))
+            slide = torch.concat((anchor_slide, pos_slide))
+            x, slide = x.to(device), slide.to(device)
 
-            losses, outputs = self.sae(x, section)
+            losses, outputs = self.sae(x, slide)
             loss = losses['overall_loss']
             loss.backward()
             opt.step()
@@ -149,10 +152,8 @@ class SAELearner(object):
         num_patches = self.size[0] // self.sae_args.patch_size
         embs = torch.zeros(
             n, num_patches, num_patches, self.sae.encoder.pos_embedding.shape[-1])
-        embs_prequant = torch.zeros(
-            n, num_patches, num_patches, self.sae.encoder.pos_embedding.shape[-1])
-        # pred_patches = torch.zeros(n, len(self.channels), self.train_transform.output_size[0], self.train_transform.output_size[1])
         pred_patches = torch.zeros(n, len(self.channels), num_patches, num_patches)
+        cluster_ids = torch.zeros(n, num_patches, num_patches)
 
         bs = self.inference_dl.batch_size
         self.sae.eval()
@@ -161,26 +162,26 @@ class SAELearner(object):
                 x, slide = b['tile'], b['idx']
                 x, slide = x.to(device), slide.to(device)
                 prequant_tokens, mu, std = self.sae.encode(x, slide, use_means=True)
-                encoded_tokens, _, _ = self.sae.quantize(prequant_tokens)
+                encoded_tokens, clusters, _ = self.sae.quantize(prequant_tokens)
 
                 pred_pixel_values = self.sae.decode(encoded_tokens, slide, scale=True)
 
                 encoded_tokens = rearrange(encoded_tokens[:, 1:], 'b (h w) d -> b h w d',
                                         h=num_patches, w=num_patches)
-                prequant_tokens = rearrange(prequant_tokens[:, 1:], 'b (h w) d -> b h w d',
-                                        h=num_patches, w=num_patches)
                 pred_pixel_values = rearrange(
                     pred_pixel_values, 'b (h w) c -> b c h w',
                     h=num_patches, w=num_patches,
                     c=len(self.channels))
-                
+                clusters = rearrange(clusters, 'b (h w) -> b h w',
+                                        h=num_patches, w=num_patches)
+
                 embs[i * bs:(i + 1) * bs] = encoded_tokens.cpu().detach()
-                embs_prequant[i * bs:(i + 1) * bs] = prequant_tokens.cpu().detach()
                 pred_patches[i * bs:(i + 1) * bs] = pred_pixel_values.cpu().detach()
+                cluster_ids[i * bs:(i + 1) * bs] = clusters.cpu().detach()
+
         recon_imgs = torch.stack(
             [self.inference_ds.section_from_tiles(
                 pred_patches, i, size=(num_patches, num_patches)
-                # pred_patches, i, size=(self.train_transform.output_size[0], self.train_transform.output_size[1])
             ) for i in range(len(self.inference_ds.sections))]
         )
         recon_embs = torch.stack(
@@ -189,11 +190,11 @@ class SAELearner(object):
                 i, size=(num_patches, num_patches))
                 for i in range(len(self.inference_ds.sections))] 
         )
-        recon_embs_prequant = torch.stack(
+        recon_cluster_ids = torch.stack(
             [self.inference_ds.section_from_tiles(
-                rearrange(embs_prequant, 'n h w c -> n c h w'),
+                rearrange(cluster_ids, 'n h w -> n 1 h w'),
                 i, size=(num_patches, num_patches))
                 for i in range(len(self.inference_ds.sections))] 
-        )
+        ).squeeze(1)
 
-        return recon_imgs, recon_embs, recon_embs_prequant
+        return recon_imgs, recon_embs, recon_cluster_ids
