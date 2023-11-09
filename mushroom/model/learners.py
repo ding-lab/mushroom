@@ -154,6 +154,7 @@ class SAELearner(object):
             n, num_patches, num_patches, self.sae.encoder.pos_embedding.shape[-1])
         pred_patches = torch.zeros(n, len(self.channels), num_patches, num_patches)
         cluster_ids = torch.zeros(n, num_patches, num_patches)
+        cluster_probs = torch.zeros(n, num_patches, num_patches, self.sae_args.codebook_size)
 
         bs = self.inference_dl.batch_size
         self.sae.eval()
@@ -162,9 +163,9 @@ class SAELearner(object):
                 x, slide = b['tile'], b['idx']
                 x, slide = x.to(device), slide.to(device)
                 prequant_tokens, mu, std = self.sae.encode(x, slide, use_means=True)
-                encoded_tokens, clusters, _ = self.sae.quantize(prequant_tokens)
+                encoded_tokens, clusters, probs = self.sae.quantize(prequant_tokens)
 
-                pred_pixel_values = self.sae.decode(encoded_tokens, slide, scale=True)
+                pred_pixel_values = self.sae.decode(encoded_tokens, slide)
 
                 encoded_tokens = rearrange(encoded_tokens[:, 1:], 'b (h w) d -> b h w d',
                                         h=num_patches, w=num_patches)
@@ -174,10 +175,13 @@ class SAELearner(object):
                     c=len(self.channels))
                 clusters = rearrange(clusters, 'b (h w) -> b h w',
                                         h=num_patches, w=num_patches)
+                probs = rearrange(probs, 'b (h w) d -> b h w d',
+                                        h=num_patches, w=num_patches)
 
                 embs[i * bs:(i + 1) * bs] = encoded_tokens.cpu().detach()
                 pred_patches[i * bs:(i + 1) * bs] = pred_pixel_values.cpu().detach()
                 cluster_ids[i * bs:(i + 1) * bs] = clusters.cpu().detach()
+                cluster_probs[i * bs:(i + 1) * bs] = probs.cpu().detach()
 
         recon_imgs = torch.stack(
             [self.inference_ds.section_from_tiles(
@@ -196,5 +200,11 @@ class SAELearner(object):
                 i, size=(num_patches, num_patches))
                 for i in range(len(self.inference_ds.sections))] 
         ).squeeze(1)
+        recon_cluster_probs = torch.stack(
+            [self.inference_ds.section_from_tiles(
+                rearrange(cluster_probs, 'n h w c -> n c h w'),
+                i, size=(num_patches, num_patches))
+                for i in range(len(self.inference_ds.sections))] 
+        )
 
-        return recon_imgs, recon_embs, recon_cluster_ids
+        return recon_imgs, recon_embs, recon_cluster_ids, recon_cluster_probs
