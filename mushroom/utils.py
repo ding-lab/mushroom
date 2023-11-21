@@ -4,6 +4,7 @@ import re
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+import torchvision.transforms.functional as TF
 from torchio.transforms import Resize
 from einops import rearrange
 from sklearn.cluster import AgglomerativeClustering
@@ -94,4 +95,28 @@ def display_cluster_probs(probs):
             ax.set_yticks([])
             ax.set_xticks([])
             if c == 0: ax.set_ylabel(r, rotation=90)
+
+
+def rescale(x, scale=.1, dim_order='h w c', target_dtype=torch.uint8):
+    is_tensor = isinstance(x, torch.Tensor)
+    if not is_tensor:
+        x = torch.tensor(x)
+
+    if dim_order == 'h w c':
+        x = rearrange(x, 'h w c -> c h w')
+    elif dim_order == 'h w':
+        x = rearrange(x, 'h w -> 1 h w')
+
+    x = TF.resize(x, (int(x.shape[-2] * scale), int(x.shape[-1] * scale)), antialias=True)
+    x = TF.convert_image_dtype(x, target_dtype)
+
+    if dim_order == 'h w c':
+        x = rearrange(x, 'c h w -> h w c')
+    elif dim_order == 'h w':
+        x = rearrange(x, '1 h w -> h w')
+
+    if not is_tensor:
+        x = x.numpy()
+    
+    return x
             
