@@ -235,8 +235,10 @@ class MultiplexSectionDataset(Dataset):
 
         self.transform = transform if transform is not None else nn.Identity()
 
+        self.n = np.iinfo(np.int64).max # make infinite
+
     def __len__(self):
-        return np.iinfo(np.int64).max # make infinite
+        return self.n
 
     def __getitem__(self, idx):
         anchor_section = np.random.choice(self.sections)

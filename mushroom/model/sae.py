@@ -190,7 +190,7 @@ class SAE(nn.Module):
             'encoded_tokens_prequant': encoded_tokens_prequant,
             'encoded_tokens': encoded_tokens,
             'pred_pixel_values': pred_pixel_values,
-            # 'cluster_probs': hots,
+            'cluster_probs': probs,
             'clusters': clusters,
         }
 

@@ -271,8 +271,10 @@ class VisiumSectionDataset(Dataset):
         self.means = torch.tensor(self.transform.normalize.mean)
         self.stds = torch.tensor(self.transform.normalize.std)
 
+        self.n = np.iinfo(np.int64).max # make infinite
+
     def __len__(self):
-        return np.iinfo(np.int64).max # make infinite
+        return self.n
 
     def __getitem__(self, idx):
         anchor_section = np.random.choice(self.sections)
