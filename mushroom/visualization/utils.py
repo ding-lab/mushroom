@@ -115,7 +115,7 @@ def display_sections(config, multiplex_cmap=None, gene='EPCAM', dtype_order=None
         ax.set_title(sid)
 
 
-def display_labeled_as_rgb(labeled, cmap=None):
+def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=False):
     if isinstance(labeled, torch.Tensor):
         labeled = labeled.numpy()
     cmap = get_cmap(len(np.unique(labeled))) if cmap is None else cmap
@@ -123,13 +123,16 @@ def display_labeled_as_rgb(labeled, cmap=None):
     if len(cmap) < len(labels):
         raise RuntimeError('cmap is too small')
     new = np.zeros((labeled.shape[0], labeled.shape[1], 3))
-    for l in labels:
-        c = cmap[l]
+    for i, l in enumerate(labels):
+        if preserve_indices:
+            c = cmap[l]
+        else:
+            c = cmap[i]
         new[labeled==l] = c
     return new
 
 
-def display_clusters(clusters, cmap=None, figsize=None, horizontal=True):
+def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserve_indices=False):
     if figsize is None:
         figsize = (clusters.shape[0] * 2, 5)
         if not horizontal:
@@ -146,7 +149,7 @@ def display_clusters(clusters, cmap=None, figsize=None, horizontal=True):
         cmap = sns.color_palette(cmap)
 
     for i, labeled in enumerate(clusters):
-        axs[i].imshow(display_labeled_as_rgb(labeled, cmap=cmap))
+        axs[i].imshow(display_labeled_as_rgb(labeled, cmap=cmap, preserve_indices=preserve_indices))
         axs[i].set_xticks([])
         axs[i].set_yticks([])
 
@@ -164,4 +167,11 @@ def display_legend(labels, cmap, ax=None):
         loc='center'
     )
     # return ax
+
+
+def show_groups(clusters, groups):
+    mapping = {i:i for i in np.unique(clusters)}
+    mapping.update({i:-1 for i in np.unique(clusters) if i not in groups})
+    neigh_ids = np.vectorize(mapping.get)(clusters)
+    display_clusters(neigh_ids)
     

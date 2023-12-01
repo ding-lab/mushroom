@@ -24,8 +24,8 @@ def get_fullres_size(adata):
     d = next(iter(adata.uns['spatial'].values()))
     img = d['images']['hires']
     fullres_size = (
-        img.shape[0] / d['scalefactors']['tissue_hires_scalef'],
-        img.shape[1] / d['scalefactors']['tissue_hires_scalef']
+        int(img.shape[0] / d['scalefactors']['tissue_hires_scalef']),
+        int(img.shape[1] / d['scalefactors']['tissue_hires_scalef'])
     )
     return fullres_size
 
@@ -120,6 +120,7 @@ def get_section_to_image(
 
     section_to_img = {}
     for i, (sid, adata) in enumerate(section_to_adata.items()):
+        logging.info(f'generating image data for section {sid}')
         # filter genes/channels
         adata = adata[:, channels]
 
@@ -135,8 +136,8 @@ def get_section_to_image(
             fullres_size = get_fullres_size(adata)
     
         scaled_size = (
-            int(fullres_size[0] * scale),
-            int(fullres_size[1] * scale),
+            int(fullres_size[0] * scale) + 1,
+            int(fullres_size[1] * scale) + 1,
         )
 
         labeled_locations = torch.zeros(*scaled_size, dtype=torch.long)

@@ -24,7 +24,7 @@ def pixels_per_micron(filepath):
     im = ome.images[0]
     return im.pixels.physical_size_x
 
-def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict', scale=None):
+def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict', scale=None, bbox=None):
     tif = TiffFile(filepath)
     ome = from_xml(tif.ome_metadata)
     im = ome.images[0]
@@ -34,6 +34,11 @@ def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict'
     for c, p in zip(im.pixels.channels, tif.pages):
         if channels is None or c.name in channels:
             img = p.asarray()
+
+            if bbox is not None:
+                r1, r2, c1, c2 = bbox
+                img = img[r1:r2, c1:c2]
+
             d[c.name] = img
 
             if scale is not None:
@@ -137,6 +142,7 @@ def get_section_to_image(sid_to_filepaths, channels, channel_mapping=None, scale
 
     section_to_img = {}
     for sid, filepath in sid_to_filepaths.items():
+        logging.info(f'generating image data for section {sid}')
         cs, imgs = extract_ome_tiff(filepath, as_dict=False, scale=scale)
         cs = [channel_mapping.get(c, c) for c in cs]
         idxs = [cs.index(c) for c in channels]

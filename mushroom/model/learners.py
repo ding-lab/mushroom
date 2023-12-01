@@ -7,6 +7,7 @@ from einops import rearrange, repeat
 from torch.utils.data import DataLoader
 from vit_pytorch import ViT
 
+import mushroom.data.xenium as xenium
 import mushroom.data.multiplex as multiplex
 import mushroom.data.visium as visium
 from mushroom.model.sae import SAE, SAEargs
@@ -49,6 +50,11 @@ class SAELearner(object):
                 self.config, self.scale, self.size, self.sae_args.patch_size,
                 channels=channels, channel_mapping=self.channel_mapping, contrast_pct=contrast_pct,
             )
+        elif self.dtype == 'xenium':
+            learner_data = xenium.get_learner_data(
+                self.config, self.scale, self.size, self.sae_args.patch_size,
+                channels=channels, channel_mapping=self.channel_mapping,
+            )
         elif self.dtype == 'he':
             pass
         elif self.dtype == 'visium':
@@ -58,7 +64,7 @@ class SAELearner(object):
             )
         else:
             raise RuntimeError(f'dtype must be one of the following: \
-["multiplex", "he", "visium"], got {self.dtype}')
+["multiplex", "he", "visium", "xenium"], got {self.dtype}')
 
         self.section_to_img = learner_data.section_to_img
         self.train_transform = learner_data.train_transform
