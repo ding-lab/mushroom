@@ -250,7 +250,7 @@ class MushroomViewer(object):
             if dtype == 'multiplex':
                 self.dtype_to_planes[dtype] = MultiplexPlanes(
                     section_to_data, self.fullres_size, self.scaled_size, self.scale,
-                    channel_mapping=config['learner_kwargs']['channel_mapping']
+                    channel_mapping=config['learner_kwargs'].get('channel_mapping')
                 )
             if dtype == 'he':
                 self.dtype_to_planes[dtype] = HEPlanes(

@@ -15,6 +15,7 @@ from torchio.transforms import Resize
 from mushroom.model.sae import SAEargs
 from mushroom.model.learners import SAELearner
 from mushroom.data.visium import format_expression
+import mushroom.utils as utils
 
 
 class Mushroom(object):
@@ -53,9 +54,9 @@ class Mushroom(object):
                 ) for sid, img in zip(self.section_ids, self.true_imgs)]
             )
             
-        self.recon_embs, self.recon_imgs, self.recon_cluster_ids = None, None, None
+        self.recon_embs, self.recon_imgs, self.recon_cluster_ids, self.recon_cluster_probs = None, None, None, None
 
-        self.cluster_sims, self.cluster_ids, self.scaled_recon_imgs = None, None, None
+        self.cluster_probs, self.cluster_ids, self.scaled_recon_imgs = None, None, None
 
     @staticmethod
     def from_config(mushroom_config):
@@ -84,19 +85,6 @@ class Mushroom(object):
             section_imgs = None
 
         return section_imgs
-    
-    def _get_cluster_sims(self):
-        x = rearrange(self.recon_embs, 'n c h w -> (n h w) c 1')
-        codebook = self.learner.sae.vq.codebook.t()
-
-        dists = F.cosine_similarity(x, codebook)
-        dists = rearrange(
-            dists, '(n h w) c -> n c h w',
-            n=self.recon_embs.shape[0],
-            h=self.recon_embs.shape[-2],
-            w=self.recon_embs.shape[-1]
-        )
-        return dists
 
     def initialize_learner(self):
         learner = SAELearner(
@@ -142,18 +130,18 @@ class Mushroom(object):
         if self.chkpt_filepath is None:
             raise RuntimeError('Must either train model or load a model checkpoint. To train, run .train()')
 
-        self.recon_imgs, self.recon_embs, self.recon_cluster_ids = self.learner.embed_sections()
+        self.recon_imgs, self.recon_embs, self.recon_cluster_ids, self.recon_cluster_probs = self.learner.embed_sections()
         self.recon_cluster_ids = self.recon_cluster_ids.to(torch.long)
 
-        self.cluster_sims = self._get_cluster_sims()
+        self.cluster_ids = utils.relabel(self.recon_cluster_ids)
+        self.cluster_probs = self.recon_cluster_probs[:, torch.unique(self.recon_cluster_ids)]
 
         scalers = torch.amax(self.recon_imgs, dim=(-2, -1))
         self.scaled_recon_imgs = self.recon_imgs / rearrange(scalers, 'n c -> n c 1 1')
 
-    def get_cluster_intensities(self):
+    def get_cluster_intensities(self, cluster_ids):
         data = []
         x = rearrange(self.scaled_recon_imgs, 'n c h w -> n h w c').clone().detach().cpu().numpy()
-        cluster_ids = self.recon_cluster_ids.clone().detach().cpu().numpy()
         for cluster in np.unique(cluster_ids):
             mask = cluster_ids==cluster
             data.append(x[mask, :].mean(axis=0))

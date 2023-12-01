@@ -6,6 +6,7 @@ from einops import rearrange
 from scipy import ndimage as ndi
 
 from mushroom.data.visium import get_fullres_size
+import mushroom.utils as utils
 
 
 def read_bigwarp_warp_field(fp, downsample_scaler):
@@ -17,6 +18,7 @@ def read_bigwarp_warp_field(fp, downsample_scaler):
 
     # rescale to original size
     scale = 1 / downsample_scaler
+
     ddf = TF.resize(ddf, (int(ddf.shape[-2] * scale), int(ddf.shape[-1] * scale)), antialias=False)
     ddf *= scale
 
@@ -71,7 +73,6 @@ def warp_pts(pts, ddf):
     """
     if not isinstance(pts, torch.Tensor):
         pts = torch.tensor(pts)
-
     max_r, max_c = pts.max(dim=0).values
     img = torch.zeros((max_r + 1, max_c + 1), dtype=torch.long)
     for i, (r, c) in enumerate(pts):
@@ -104,46 +105,6 @@ def warp_pts(pts, ddf):
     return warped, mask
 
 
-# def register_visium(he, adata, ddf, target_pix_per_micron=1., moving_pix_per_micron=None):
-#     """
-#     he - (3, h, w)
-#     labeled - (1, h, w)
-#     """
-#     if not isinstance(he, torch.Tensor):
-#         he = torch.tensor(he)
-#     new = adata.copy()
-#     if moving_pix_per_micron is None:
-#         moving_pix_per_micron = next(iter(
-#             adata.uns['spatial'].values()))['scalefactors']['spot_diameter_fullres'] / 65.
-#     scale = target_pix_per_micron / moving_pix_per_micron # bring to target img resolution
-#     he = register_he(he, ddf) # warped he is at target resolution
-
-#     d = next(iter(new.uns['spatial'].values()))
-#     scalefactors = d['scalefactors']
-
-#     hires_size = (int(scalefactors['tissue_hires_scalef'] * he.shape[-2]),
-#                   int(scalefactors['tissue_hires_scalef'] * he.shape[-1]))
-#     lowres_size = (int(scalefactors['tissue_lowres_scalef'] * he.shape[-2]),
-#                   int(scalefactors['tissue_lowres_scalef'] * he.shape[-1]))
-    
-#     hires = TF.resize(he, hires_size, antialias=True)
-#     lowres = TF.resize(he, lowres_size, antialias=True)
-
-#     d['images']['hires'] = rearrange(hires, 'c h w -> h w c').numpy()
-#     d['images']['lowres'] = rearrange(lowres, 'c h w -> h w c').numpy()
-
-#     scalefactors['spot_diameter_fullres'] *= scale
-#     scalefactors['fiducial_diameter_fullres'] *= scale
-
-#     new.obsm['spatial_original'] = new.obsm['spatial'].copy()
-#     x = (torch.tensor(new.obsm['spatial']) * scale).to(torch.long)
-#     x = x[:, [1, 0]] # needs to be (h, w) instead of (w, h)
-#     transformed, mask = warp_pts(x, ddf)
-#     new = new[mask.numpy()]
-#     new.obsm['spatial'] = transformed[:, [1, 0]].numpy()
- 
-#     return new
-
 def resize_and_warp(moving, ddf):
     """
     moving - (c, h, w)
@@ -153,7 +114,7 @@ def resize_and_warp(moving, ddf):
     downsample_ddf = TF.resize(ddf, (moving.shape[-2], moving.shape[-1]), antialias=False)
     downsample_ddf *= downsample
     downsample_ddf = downsample_ddf.to(torch.long)
-    return register_he(moving, downsample_ddf)
+    return warp_image(moving, downsample_ddf)
 
 
 def register_visium(adata, ddf, target_pix_per_micron=1., moving_pix_per_micron=None):
@@ -174,10 +135,10 @@ def register_visium(adata, ddf, target_pix_per_micron=1., moving_pix_per_micron=
         rearrange(lowres, 'h w c -> c h w'), (int(scale * lowres.shape[0]), int(scale * lowres.shape[1])), antialias=True,
     )
 
-    warped_hires = rearrange(resize_and_warp(hires, ddf), 'c h w -> h w c').numpy()
+    warped_hires = rearrange(warp_image(hires, ddf), 'c h w -> h w c').numpy()
     d['images']['hires'] = warped_hires / warped_hires.max() # numpy conversion has slight overflow issue
 
-    warped_lowres = rearrange(resize_and_warp(lowres, ddf), 'c h w -> h w c').numpy()
+    warped_lowres = rearrange(warp_image(lowres, ddf), 'c h w -> h w c').numpy()
     d['images']['lowres'] = warped_lowres / warped_lowres.max() # numpy conversion has slight overflow issue
 
     new.obsm['spatial_original'] = new.obsm['spatial'].copy()
@@ -186,6 +147,75 @@ def register_visium(adata, ddf, target_pix_per_micron=1., moving_pix_per_micron=
     transformed, mask = warp_pts(x, ddf)
     new = new[mask.numpy()]
     new.obsm['spatial'] = transformed[:, [1, 0]].numpy()
+
+    return new
+
+def register_xenium(adata, ddf):
+    new = adata.copy()
+
+    # # get rid of cells and transcripts outside of ddf
+    # pts = new.uns['transcripts'][['y_location', 'x_location']].values
+    # print(type(pts))
+    # mask = ((pts[:, 0] < ddf.shape[-2]) & (pts[:, 1] < ddf.shape[-1]))
+    # pts = pts[mask]
+
+    # new.uns['transcripts'] = new.uns['transcripts'][mask]
+
+
+    # deltas = ddf[:, pts[:, 0], pts[:, 1]]
+    # warped_pts = pts + deltas.t().numpy()
+
+    # new.uns['transcripts']['y_location_orig'] = new.uns['transcripts']['y_location'].to_list()
+    # new.uns['transcripts']['x_location_orig'] = new.uns['transcripts']['x_location'].to_list()
+    # new.uns['transcripts']['y_location'] = warped_pts[:, 0]
+    # new.uns['transcripts']['x_location'] = warped_pts[:, 1]
+
+    # # filter transcripts out side of registered field of view
+    # mask = (
+    #     (new.uns['transcripts']['y_location']>=0) &\
+    #     (new.uns['transcripts']['y_location']<=ddf.shape[-2]) &\
+    #     (new.uns['transcripts']['x_location']>=0) &\
+    #     (new.uns['transcripts']['y_location']<=ddf.shape[-1])
+    # )
+    # new.uns['transcripts'] = new.uns['transcripts'][mask]
+
+
+    # new.obsm['spatial_orig'] = new.obsm['spatial'].copy()
+    # pts = np.asarray(new.obsm['spatial'][:, [1, 0]])
+
+    # mask = ((pts[:, 0] < ddf.shape[-2]) & (pts[:, 1] < ddf.shape[-1]))
+    # pts = pts[mask]
+    # new = new[mask]
+
+    # deltas = ddf[:, pts[:, 0], pts[:, 1]]
+    # warped_pts = pts + deltas.t().numpy()
+    # new.obsm['spatial'] = warped_pts[:, [1, 0]].astype(int)
+
+
+    # # filter cells out side registered field of view
+    # mask = (
+    #     (new.obsm['spatial'][:, 1]>=0) &\
+    #     (new.obsm['spatial'][:, 1]<=ddf.shape[-2]) &\
+    #     (new.obsm['spatial'][:, 0]>=0) &\
+    #     (new.obsm['spatial'][:, 0]<=ddf.shape[-1])
+    # )
+    # new = new[mask]
+
+
+    new.obsm['spatial_original'] = new.obsm['spatial'].copy()
+    x = new.obsm['spatial'][:, [1, 0]]
+    transformed, mask = warp_pts(x, ddf)
+    new = new[mask.numpy()]
+    new.obsm['spatial'] = transformed[:, [1, 0]].numpy()
+
+    d = next(iter(new.uns['spatial'].values()))
+    sf = d['scalefactors']['tissue_hires_scalef']
+    orig_size = d['images']['hires'].shape
+    hires = torch.tensor(rearrange(d['images']['hires'], 'h w -> 1 h w'))
+    hires = TF.resize(hires, (int(hires.shape[-2] / sf), int(hires.shape[-1] / sf)), antialias=True).numpy()
+    warped_hires = warp_image(hires, ddf)
+    warped_hires = TF.resize(torch.tensor(warped_hires), (int(warped_hires.shape[-2] * sf), int(warped_hires.shape[-1] * sf)), antialias=True).numpy()[0]
+    d['images']['hires'] = warped_hires / warped_hires.max() # numpy conversion has slight overflow issue
 
     return new
 

@@ -81,12 +81,16 @@ class SAE(nn.Module):
         self.latent_var = nn.Linear(encoder_dim, encoder_dim)
         self.latent_norm = nn.BatchNorm1d(num_patches)
 
-        self.vq = VectorQuantize(
-            dim = encoder_dim,
-            codebook_size = codebook_size,     # codebook size
-        )
+        self.to_logits = nn.Linear(encoder_dim, codebook_size)
 
-        self.scale_factors = nn.Embedding(self.n_slides, n_channels)
+        self.codebook = nn.Parameter(torch.rand(codebook_size, encoder_dim))
+
+        # self.vq = VectorQuantize(
+        #     dim = encoder_dim,
+        #     codebook_size = codebook_size,     # codebook size
+        # )
+
+        # self.scale_factors = nn.Embedding(self.n_slides, n_channels)
 
     def _kl_divergence(self, z, mu, std):
         # lightning imp.
@@ -145,18 +149,19 @@ class SAE(nn.Module):
     def quantize(self, encoded_tokens):
         # vector quantize
         slide_token, patch_tokens = encoded_tokens[:, :1], encoded_tokens[:, 1:]
-        patch_tokens, indices, commit_loss = self.vq(patch_tokens)
-        encoded_tokens = torch.cat((slide_token, patch_tokens), dim=1)
 
-        return encoded_tokens, indices, commit_loss
+        logits = self.to_logits(patch_tokens)
+        hots = F.gumbel_softmax(logits, dim=-1, hard=True)
+        probs = F.softmax(logits, dim=-1)
+        encoded = hots @ self.codebook
+
+        encoded_tokens = torch.cat((slide_token, encoded), dim=1)
+
+        return encoded_tokens, probs.argmax(dim=-1), probs
     
-    def decode(self, encoded_tokens, slide, scale=True):
+    def decode(self, encoded_tokens, slide):
         
         pred_pixel_values = self.decoder(encoded_tokens[:, 1:])
-
-        if scale:
-            scale_factors = rearrange(self.scale_factors(slide), 'b d -> b 1 d')
-            pred_pixel_values = pred_pixel_values * scale_factors
 
         return pred_pixel_values
 
@@ -169,7 +174,7 @@ class SAE(nn.Module):
         encoded_tokens_prequant, mu, std  = self.encode(img, slide, use_means=use_means)
 
         # encoded_tokens, probs, hots, clusters = self.quantize(encoded_tokens_prequant)
-        encoded_tokens, clusters, _ = self.quantize(encoded_tokens_prequant)
+        encoded_tokens, clusters, probs = self.quantize(encoded_tokens_prequant)
 
         pred_pixel_values = self.decode(encoded_tokens, slide) # (b, n, channels)
 
@@ -179,11 +184,6 @@ class SAE(nn.Module):
         patches = patches.mean(-2)
 
         recon_loss = F.mse_loss(pred_pixel_values, patches) # (b, n, channels)
-        # recon_loss = F.cosine_embedding_loss(
-        #     rearrange(pred_pixel_values, 'b n c -> (b n) c'),
-        #     rearrange(patches, 'b n c -> (b n) c'),
-        #     torch.ones(rearrange(patches, 'b n c -> (b n) c').shape[0], device=pred_pixel_values.device)
-        # ) # (b, n, channels)
         kl_loss = torch.mean(self._kl_divergence(encoded_tokens_prequant, mu, std))
 
         outputs = {
@@ -194,12 +194,17 @@ class SAE(nn.Module):
             'clusters': clusters,
         }
 
-        anchor_embs, pos_embs = encoded_tokens.chunk(2)
-        token_idxs = torch.randint(anchor_embs.shape[1], (anchor_embs.shape[0],))
+        anchor_probs, pos_probs = probs.chunk(2)
+        anchor_clusters, pos_clusters = clusters.chunk(2)
+        token_idxs = torch.randint(anchor_probs.shape[1], (anchor_probs.shape[0],))
 
-        pred = anchor_embs[torch.arange(anchor_embs.shape[0]), token_idxs]
-        target = pos_embs[torch.arange(pos_embs.shape[0]), token_idxs]
-        neigh_loss = F.cosine_embedding_loss(pred, target, torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
+        pred = anchor_probs[torch.arange(anchor_probs.shape[0]), token_idxs]
+        target = pos_clusters[torch.arange(pos_clusters.shape[0]), token_idxs]
+        neigh_loss = F.cross_entropy(pred, target)
+
+        # pred = anchor_embs[torch.arange(anchor_embs.shape[0]), token_idxs]
+        # target = pos_embs[torch.arange(pos_embs.shape[0]), token_idxs]
+        # neigh_loss = F.cosine_embedding_loss(pred, target, torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
 
         overall_loss = recon_loss * self.recon_scaler + kl_loss * self.kl_scaler + neigh_loss * self.neigh_scaler
 

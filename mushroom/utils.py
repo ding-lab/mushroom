@@ -4,8 +4,10 @@ import re
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+import torchvision.transforms.functional as TF
 from torchio.transforms import Resize
 from einops import rearrange
+from sklearn.cluster import AgglomerativeClustering
 
 def listfiles(folder, regex=None):
     """Return all files with the given regex in the given folder structure"""
@@ -46,6 +48,24 @@ def get_interpolated_volume(stacked, section_positions, method='label_gaussian')
     return interp_volume
 
 
+def relabel(labels):
+    new = torch.zeros_like(labels, dtype=labels.dtype)
+    ids = labels.unique()
+    for i in range(len(ids)):
+        new[labels==ids[i]] = i
+        
+    return new
+
+
+def aggregate_clusters(df, cluster_ids, n_clusters=10, distance_threshold=None):
+    clustering = AgglomerativeClustering(
+        n_clusters=n_clusters, distance_threshold=distance_threshold
+    ).fit(df.values)
+    cluster_to_label = {c:l for c, l in zip(df.index.to_list(), clustering.labels_)}
+    agg_ids = np.vectorize(cluster_to_label.get)(cluster_ids)
+    return cluster_to_label, agg_ids
+
+
 def display_thresholds(cuts, cluster_ids, intensity_df, channel):
     nrows, ncols = len(cuts), cluster_ids.shape[0]
     fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=(ncols, nrows))
@@ -62,4 +82,41 @@ def display_thresholds(cuts, cluster_ids, intensity_df, channel):
         
         axs[cut_idx, 0].set_ylabel("%.2f" % cut, rotation=90)
     return axs
-        
+
+
+def display_cluster_probs(probs):
+    if isinstance(probs, torch.Tensor):
+        probs = probs.cpu().detach().numpy()
+    fig, axs = plt.subplots(nrows=probs.shape[1], ncols=probs.shape[0], figsize=(probs.shape[0], probs.shape[1]))
+    for c in range(probs.shape[0]):
+        for r in range(probs.shape[1]):
+            ax = axs[r, c]
+            ax.imshow(probs[c, r])
+            ax.set_yticks([])
+            ax.set_xticks([])
+            if c == 0: ax.set_ylabel(r, rotation=90)
+
+
+def rescale(x, scale=.1, dim_order='h w c', target_dtype=torch.uint8):
+    is_tensor = isinstance(x, torch.Tensor)
+    if not is_tensor:
+        x = torch.tensor(x)
+
+    if dim_order == 'h w c':
+        x = rearrange(x, 'h w c -> c h w')
+    elif dim_order == 'h w':
+        x = rearrange(x, 'h w -> 1 h w')
+
+    x = TF.resize(x, (int(x.shape[-2] * scale), int(x.shape[-1] * scale)), antialias=True)
+    x = TF.convert_image_dtype(x, target_dtype)
+
+    if dim_order == 'h w c':
+        x = rearrange(x, 'c h w -> h w c')
+    elif dim_order == 'h w':
+        x = rearrange(x, '1 h w -> h w')
+
+    if not is_tensor:
+        x = x.numpy()
+    
+    return x
+            

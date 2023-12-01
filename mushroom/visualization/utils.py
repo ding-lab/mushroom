@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
 import scanpy as sc
 import seaborn as sns
@@ -10,6 +11,19 @@ from einops import rearrange
 import mushroom.data.multiplex as multiplex
 import mushroom.data.visium as visium
 import mushroom.data.he as he
+
+def get_cmap(n):
+    if n <= 10:
+        return sns.color_palette()
+    if n <= 20:
+        return sns.color_palette('tab20')
+    
+    iters = (n // 20) + 1
+    cmap = []
+    for i in range(iters):
+        cmap += sns.color_palette('tab20')
+    
+    return cmap
 
 def calculate_target_visualization_shape(config, output_data, pixels_per_micron=None, microns_per_section=5):
     scaled_size = output_data['true_imgs'].shape
@@ -101,15 +115,63 @@ def display_sections(config, multiplex_cmap=None, gene='EPCAM', dtype_order=None
         ax.set_title(sid)
 
 
-def display_labeled_as_rgb(labeled, cmap=None):
+def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=False):
     if isinstance(labeled, torch.Tensor):
         labeled = labeled.numpy()
-    cmap = sns.color_palette() if cmap is None else cmap
+    cmap = get_cmap(len(np.unique(labeled))) if cmap is None else cmap
     labels = sorted(np.unique(labeled))
     if len(cmap) < len(labels):
         raise RuntimeError('cmap is too small')
     new = np.zeros((labeled.shape[0], labeled.shape[1], 3))
-    for l in labels:
-        c = cmap[l]
+    for i, l in enumerate(labels):
+        if preserve_indices:
+            c = cmap[l]
+        else:
+            c = cmap[i]
         new[labeled==l] = c
     return new
+
+
+def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserve_indices=False):
+    if figsize is None:
+        figsize = (clusters.shape[0] * 2, 5)
+        if not horizontal:
+            figsize = (figsize[1], figsize[0])
+
+    if horizontal:
+        fig, axs = plt.subplots(ncols=clusters.shape[0] + 1, figsize=figsize)
+    else:
+        fig, axs = plt.subplots(nrows=clusters.shape[0] + 1, figsize=figsize)
+
+    if cmap is None:
+        cmap = get_cmap(len(np.unique(clusters)))
+    elif isinstance(cmap, str):
+        cmap = sns.color_palette(cmap)
+
+    for i, labeled in enumerate(clusters):
+        axs[i].imshow(display_labeled_as_rgb(labeled, cmap=cmap, preserve_indices=preserve_indices))
+        axs[i].set_xticks([])
+        axs[i].set_yticks([])
+
+    display_legend(np.unique(clusters), cmap, ax=axs[-1])
+    axs[-1].axis('off')
+
+
+
+def display_legend(labels, cmap, ax=None):
+    if ax is None:
+        fig, ax = plt.subplots()
+    ax.legend(
+        handles=[mpatches.Patch(color=color, label=label)
+                 for label, color in zip(labels, cmap)],
+        loc='center'
+    )
+    # return ax
+
+
+def show_groups(clusters, groups):
+    mapping = {i:i for i in np.unique(clusters)}
+    mapping.update({i:-1 for i in np.unique(clusters) if i not in groups})
+    neigh_ids = np.vectorize(mapping.get)(clusters)
+    display_clusters(neigh_ids)
+    
