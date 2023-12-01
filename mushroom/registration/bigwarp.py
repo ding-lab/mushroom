@@ -210,9 +210,11 @@ def register_xenium(adata, ddf):
 
     d = next(iter(new.uns['spatial'].values()))
     sf = d['scalefactors']['tissue_hires_scalef']
+    orig_size = d['images']['hires'].shape
     hires = torch.tensor(rearrange(d['images']['hires'], 'h w -> 1 h w'))
     hires = TF.resize(hires, (int(hires.shape[-2] / sf), int(hires.shape[-1] / sf)), antialias=True).numpy()
-    warped_hires = warp_image(hires, ddf)[0]
+    warped_hires = warp_image(hires, ddf)
+    warped_hires = TF.resize(torch.tensor(warped_hires), (int(warped_hires.shape[-2] * sf), int(warped_hires.shape[-1] * sf)), antialias=True).numpy()[0]
     d['images']['hires'] = warped_hires / warped_hires.max() # numpy conversion has slight overflow issue
 
     return new
