@@ -20,6 +20,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 import mushroom.data.multiplex as multiplex
 import mushroom.data.xenium as xenium
 import mushroom.data.visium as visium
+import mushroom.visualization.utils as vis_utils
 from mushroom.model.sae import SAEargs
 from mushroom.model.model import LitMushroom
 import mushroom.utils as utils
@@ -123,11 +124,9 @@ class Mushroom(object):
                 ) for sid, img in zip(self.section_ids, self.true_imgs)]
             )
             
-        self.recon_embs, self.recon_imgs, self.recon_cluster_ids, self.recon_cluster_probs = None, None, None, None
+        self.predicted_pixels, self.scaled_predicted_pixels = None, None
+        self.clusters, self.cluster_probs = None, None
 
-        self.cluster_probs, self.cluster_ids, self.scaled_recon_imgs = None, None, None
-
-        
 
     @staticmethod
     def from_config(mushroom_config, chkpt_filepath=None, accelerator=None):
@@ -192,37 +191,41 @@ class Mushroom(object):
     
     def train(self):
         self.trainer.fit(self.model, self.train_dl)
-    
-    # def embed_sections(self):
-    #     if self.chkpt_filepath is None:
-    #         raise RuntimeError('Must either train model or load a model checkpoint. To train, run .train()')
 
-    #     self.recon_imgs, self.recon_embs, self.recon_cluster_ids, self.recon_cluster_probs = self.model.embed_sections()
-    #     self.recon_cluster_ids = self.recon_cluster_ids.to(torch.long)
+    def embed_sections(self):
+        outputs = self.trainer.predict(self.model, self.inference_dl)
+        formatted = self.model.format_prediction_outputs(outputs)
+        self.predicted_pixels = formatted['predicted_pixels'].cpu().clone().detach().numpy()
+        self.clusters = formatted['clusters'].cpu().clone().detach().numpy().astype(int)
+        self.cluster_probs = formatted['cluster_probs'].cpu().clone().detach().numpy()
 
-    #     self.cluster_ids = utils.relabel(self.recon_cluster_ids)
-    #     self.cluster_probs = self.recon_cluster_probs[:, torch.unique(self.recon_cluster_ids)]
+        scalers = np.amax(self.predicted_pixels, axis=(-2, -1))
+        self.scaled_predicted_pixels = self.predicted_pixels / rearrange(scalers, 'n c -> n c 1 1')
 
-    #     scalers = torch.amax(self.recon_imgs, dim=(-2, -1))
-    #     self.scaled_recon_imgs = self.recon_imgs / rearrange(scalers, 'n c -> n c 1 1')
-
-    def get_cluster_intensities(self, cluster_ids):
+    def get_cluster_intensities(self):
         data = []
-        x = rearrange(self.scaled_recon_imgs, 'n c h w -> n h w c').clone().detach().cpu().numpy()
-        for cluster in np.unique(cluster_ids):
-            mask = cluster_ids==cluster
+        x = rearrange(self.scaled_predicted_pixels, 'n c h w -> n h w c')
+        for cluster in np.unique(self.clusters):
+            mask = self.clusters==cluster
             data.append(x[mask, :].mean(axis=0))
-        df = pd.DataFrame(data=data, columns=self.learner_data.channels, index=np.unique(cluster_ids))
+        df = pd.DataFrame(data=data, columns=self.learner_data.channels, index=np.unique(self.clusters))
         return df
 
+    def generate_interpolated_volume(self, z_scaler=.1):
+        section_positions = [entry['position'] for entry in self.sections
+                             if entry['data'][0]['dtype']=='multiplex']
+        section_positions = (np.asarray(section_positions) * z_scaler).astype(int)
+        cluster_volume = utils.get_interpolated_volume(self.clusters, section_positions)
+        return cluster_volume
+
     def display_predicted_pixels(self, channel=None, figsize=None):
-        if self.recon_imgs is None:
+        if self.predicted_pixels is None:
             raise RuntimeError(
                 'Must train model and embed sections before displaying. To embed run .embed_sections()')
         channel = channel if channel is not None else self.learner_data.channels[0]
-        fig, axs = plt.subplots(nrows=2, ncols=self.recon_imgs.shape[0], figsize=figsize)
+        fig, axs = plt.subplots(nrows=2, ncols=self.predicted_pixels.shape[0], figsize=figsize)
 
-        for sid, img, ax in zip(self.section_ids, self.recon_imgs, axs[0, :]):
+        for sid, img, ax in zip(self.section_ids, self.predicted_pixels, axs[0, :]):
             ax.imshow(img[self.learner_data.channels.index(channel)])
             ax.set_xticks([])
             ax.set_yticks([])
@@ -236,3 +239,21 @@ class Mushroom(object):
         axs[1, 0].set_ylabel('true')
 
         return axs
+    
+    def display_cluster_probs(self):
+        fig, axs = plt.subplots(
+            nrows=self.cluster_probs.shape[1],
+            ncols=self.cluster_probs.shape[0],
+            figsize=(self.cluster_probs.shape[0], self.cluster_probs.shape[1])
+        )
+        for c in range(self.cluster_probs.shape[0]):
+            for r in range(self.cluster_probs.shape[1]):
+                ax = axs[r, c]
+                ax.imshow(self.cluster_probs[c, r])
+                ax.set_yticks([])
+                ax.set_xticks([])
+                if c == 0: ax.set_ylabel(r, rotation=90)
+
+    def display_clusters(self, cmap=None, figsize=None, horizontal=True, preserve_indices=False):
+        vis_utils.display_clusters(
+            self.clusters, cmap=None, figsize=None, horizontal=True, preserve_indices=False)

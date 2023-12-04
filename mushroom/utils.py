@@ -84,19 +84,6 @@ def display_thresholds(cuts, cluster_ids, intensity_df, channel):
     return axs
 
 
-def display_cluster_probs(probs):
-    if isinstance(probs, torch.Tensor):
-        probs = probs.cpu().detach().numpy()
-    fig, axs = plt.subplots(nrows=probs.shape[1], ncols=probs.shape[0], figsize=(probs.shape[0], probs.shape[1]))
-    for c in range(probs.shape[0]):
-        for r in range(probs.shape[1]):
-            ax = axs[r, c]
-            ax.imshow(probs[c, r])
-            ax.set_yticks([])
-            ax.set_xticks([])
-            if c == 0: ax.set_ylabel(r, rotation=90)
-
-
 def rescale(x, scale=.1, dim_order='h w c', target_dtype=torch.uint8):
     is_tensor = isinstance(x, torch.Tensor)
     if not is_tensor:

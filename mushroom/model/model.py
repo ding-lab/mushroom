@@ -68,47 +68,42 @@ class LitMushroom(LightningModule):
     def training_step(self, batch, batch_idx):
         anchor_x, anchor_slide = batch['anchor_tile'], batch['anchor_idx']
         pos_x, pos_slide = batch['pos_tile'], batch['pos_idx']
-        outs = self.forward(anchor_x, anchor_slide, pos_x, pos_slide)
+        outs = self.forward(anchor_x, anchor_slide, pos_x=pos_x, pos_slide=pos_slide)
         self.log_dict({k:v for k, v in outs.items() if k!='outputs'}, on_step=False, on_epoch=True, prog_bar=True)
         return outs
+
     
     def predict_step(self, batch):
-        anchor_x, anchor_slide = batch['anchor_tile'], batch['anchor_idx']
-        pos_x, pos_slide = batch['pos_tile'], batch['pos_idx']
-        outs = self.forward(anchor_x, anchor_slide, pos_x, pos_slide)
-        self.outputs.append(outs)
-        return outs
-
-    def on_predict_start(self):
-        self.outputs = []
+        x, slide = batch['tile'], batch['idx']
+        return self.forward(x, slide)
     
-    def on_predict_end(self):
-        n = len(self.outputs)
+    def format_prediction_outputs(self, outputs):
+        n = len(self.learner_data.inference_ds)
         num_patches = self.sae_args.size // self.sae_args.patch_size
 
         cluster_ids = torch.zeros(n, num_patches, num_patches)
         cluster_probs = torch.zeros(n, num_patches, num_patches, self.sae_args.codebook_size)
-        pred_patches = torch.zeros(n, len(self.channels), num_patches, num_patches)
+        pred_patches = torch.zeros(n, self.n_channels, num_patches, num_patches)
 
-        bs = self.outputs[0]['outputs']['clusters'].shape[0]
+        bs = outputs[0]['outputs']['clusters'].shape[0]
 
-        for i, output in enumerate(self.outputs):
+        for i, output in enumerate(outputs):
             pred_pixel_values = rearrange(
-                output['pred_pixel_values'], 'b (h w) c -> b c h w',
+                output['outputs']['pred_pixel_values'], 'b (h w) c -> b c h w',
                 h=num_patches, w=num_patches,
-                c=len(self.channels))
+                c=self.n_channels)
             clusters = rearrange(
-                output['clusters'], 'b (h w) -> b h w',
+                output['outputs']['clusters'], 'b (h w) -> b h w',
                 h=num_patches, w=num_patches
             )
             probs = rearrange(
-                output['cluster_probs'], 'b (h w) d -> b h w d',
+                output['outputs']['cluster_probs'], 'b (h w) d -> b h w d',
                 h=num_patches, w=num_patches
             )
-
-            pred_patches[i * bs:(i + 1) * bs] = pred_pixel_values.cpu().detach()
-            cluster_ids[i * bs:(i + 1) * bs] = clusters.cpu().detach()
-            cluster_probs[i * bs:(i + 1) * bs] = probs.cpu().detach()
+            start, stop = i * bs, (i * bs) + output['outputs']['clusters'].shape[0]
+            pred_patches[start:stop] = pred_pixel_values.cpu().detach()
+            cluster_ids[start:stop] = clusters.cpu().detach()
+            cluster_probs[start:stop] = probs.cpu().detach()
 
         recon_imgs = torch.stack(
             [self.learner_data.inference_ds.section_from_tiles(
@@ -128,11 +123,19 @@ class LitMushroom(LightningModule):
                 for i in range(len(self.learner_data.inference_ds.sections))] 
         )
 
-        return recon_imgs, recon_cluster_ids, recon_cluster_probs
+        return {
+            'predicted_pixels': recon_imgs,
+            'clusters': recon_cluster_ids,
+            'cluster_probs': recon_cluster_probs
+        }
     
-    def forward(self, anchor_x, anchor_slide, pos_x, pos_slide):
-        x = torch.concat((anchor_x, pos_x))
-        slide = torch.concat((anchor_slide, pos_slide))
+    def forward(self, anchor_x, anchor_slide, pos_x=None, pos_slide=None):
+        if pos_x is not None:
+            x = torch.concat((anchor_x, pos_x))
+            slide = torch.concat((anchor_slide, pos_slide))
+        else:
+            x = anchor_x
+            slide = anchor_slide
 
         losses, outputs = self.sae(x, slide)
         losses['loss'] = losses['overall_loss']
