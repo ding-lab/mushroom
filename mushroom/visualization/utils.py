@@ -118,7 +118,12 @@ def display_sections(config, multiplex_cmap=None, gene='EPCAM', dtype_order=None
 def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=False):
     if isinstance(labeled, torch.Tensor):
         labeled = labeled.numpy()
-    cmap = get_cmap(len(np.unique(labeled))) if cmap is None else cmap
+    
+    if preserve_indices:
+        cmap = get_cmap(labeled.max()) if cmap is None else cmap
+    else:
+        cmap = get_cmap(len(np.unique(labeled))) if cmap is None else cmap
+
     labels = sorted(np.unique(labeled))
     if len(cmap) < len(labels):
         raise RuntimeError('cmap is too small')

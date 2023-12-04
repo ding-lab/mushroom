@@ -9,15 +9,63 @@ from einops import rearrange, repeat
 from torch.utils.data import DataLoader
 from vit_pytorch import ViT
 from lightning.pytorch import LightningModule
+from lightning.pytorch.callbacks import Callback
 
-import mushroom.data.xenium as xenium
-import mushroom.data.multiplex as multiplex
-import mushroom.data.visium as visium
 from mushroom.model.sae import SAE, SAEargs
+from mushroom.visualization.utils import display_labeled_as_rgb
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 warnings.simplefilter(action='ignore', category=FutureWarning)
+
+
+class WandbImageCallback(Callback):
+    def __init__(self, wandb_logger, learner_data, inference_dl, true_pixels, channel=None):
+        # super.__init__()
+        self.logger = wandb_logger
+        self.inference_dl = inference_dl
+        self.learner_data = learner_data
+        self.true_pixels = true_pixels
+        self.channel = channel if channel is not None else self.learner_data.channels[0]
+
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        # return None
+        # outputs = trainer.predict(pl_module, self.inference_dl)
+        # return None
+        outputs = []
+
+        with torch.no_grad():
+            for batch in self.inference_dl:
+                x, slide = batch['tile'], batch['idx']
+                x, slide = x.to(pl_module.device), slide.to(pl_module.device)
+                outs = pl_module.forward(x, slide)
+                outputs.append(outs)
+    
+        formatted = pl_module.format_prediction_outputs(outputs)
+        predicted_pixels = formatted['predicted_pixels'].cpu().clone().detach().numpy()
+        clusters = formatted['clusters'].cpu().clone().detach().numpy().astype(int)
+
+        self.logger.log_image(
+            key=f'predicted pixels {self.channel}',
+            images=[img[self.learner_data.channels.index(self.channel)] for img in predicted_pixels],
+            caption=[str(i) for i in range(len(predicted_pixels))]
+        )
+        self.logger.log_image(
+            key=f'true pixels {self.channel}',
+            images=[img[self.learner_data.channels.index(self.channel)] for img in self.true_pixels],
+            caption=[str(i) for i in range(len(self.true_pixels))]
+        )
+        self.logger.log_image(
+            key='predicted pixels first section',
+            images=[img for img in predicted_pixels[0]],
+            caption=self.learner_data.channels
+        )
+        self.logger.log_image(
+            key='clusters',
+            images=[display_labeled_as_rgb(labeled, preserve_indices=True) for labeled in clusters],
+            caption=[str(i) for i in range(len(clusters))]
+        )
 
 
 class LitMushroom(LightningModule):
@@ -69,9 +117,8 @@ class LitMushroom(LightningModule):
         anchor_x, anchor_slide = batch['anchor_tile'], batch['anchor_idx']
         pos_x, pos_slide = batch['pos_tile'], batch['pos_idx']
         outs = self.forward(anchor_x, anchor_slide, pos_x=pos_x, pos_slide=pos_slide)
-        self.log_dict({k:v for k, v in outs.items() if k!='outputs'}, on_step=False, on_epoch=True, prog_bar=True)
+        self.log_dict({k:v for k, v in outs.items() if k!='outputs'}, on_step=True, on_epoch=False, prog_bar=True)
         return outs
-
     
     def predict_step(self, batch):
         x, slide = batch['tile'], batch['idx']

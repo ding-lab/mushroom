@@ -15,14 +15,14 @@ from torch.utils.data import DataLoader
 from torchio.transforms import Resize
 from lightning.pytorch import loggers as pl_loggers
 from lightning.pytorch import Trainer
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import ModelCheckpoint, Callback
 
 import mushroom.data.multiplex as multiplex
 import mushroom.data.xenium as xenium
 import mushroom.data.visium as visium
 import mushroom.visualization.utils as vis_utils
 from mushroom.model.sae import SAEargs
-from mushroom.model.model import LitMushroom
+from mushroom.model.model import LitMushroom, WandbImageCallback
 import mushroom.utils as utils
 
 
@@ -99,30 +99,51 @@ class Mushroom(object):
 
         logging.info('model initialized')
 
-        Path(self.trainer_kwargs['log_dir']).mkdir(parents=True, exist_ok=True)
-        Path(self.trainer_kwargs['save_dir']).mkdir(parents=True, exist_ok=True)
-        logger = pl_loggers.TensorBoardLogger(
-            save_dir=self.trainer_kwargs['log_dir'],
-        )
-        chkpt_callback = ModelCheckpoint(
-            dirpath=self.trainer_kwargs['save_dir'],
-            save_last=True,
-            every_n_train_steps=self.trainer_kwargs['save_every'],
-        )
-        self.trainer = self.initialize_trainer(logger=logger, chkpt_callback=chkpt_callback)
-
-
         # make a groundtruth reconstruction for original images
         self.true_imgs = torch.stack(
             [self.learner_data.inference_ds.image_from_tiles(self.learner_data.inference_ds.section_to_tiles[s])
             for s in self.learner_data.inference_ds.sections]
-        )
+        ).cpu().detach().numpy()
         if self.dtype in ['visium']:
             self.true_imgs = torch.stack(
                 [visium.format_expression(
                     img, self.learner_data.inference_ds.section_to_adata[sid], self.learner_data.sae_args.patch_size
                 ) for sid, img in zip(self.section_ids, self.true_imgs)]
+            ).cpu().detach().numpy()
+
+        Path(self.trainer_kwargs['log_dir']).mkdir(parents=True, exist_ok=True)
+        Path(self.trainer_kwargs['save_dir']).mkdir(parents=True, exist_ok=True)
+
+        callbacks = []
+        if self.trainer_kwargs['logger_type'] == 'wandb':
+            logger = pl_loggers.WandbLogger(
+                project=self.trainer_kwargs['logger_project'],
+                save_dir=self.trainer_kwargs['log_dir'],
             )
+            logger.experiment.config.update({
+                'trainer_kwargs': self.trainer_kwargs,
+                'sae_kwargs': self.sae_kwargs,
+                'sections': self.sections
+            })
+
+            logging_callback = WandbImageCallback(
+                logger, self.learner_data, self.inference_dl, self.true_imgs,
+                channel=self.trainer_kwargs['logger_channel']
+            )
+            callbacks.append(logging_callback)
+
+        else:
+            logger = pl_loggers.TensorBoardLogger(
+                save_dir=self.trainer_kwargs['log_dir'],
+            )
+        chkpt_callback = ModelCheckpoint(
+            dirpath=self.trainer_kwargs['save_dir'],
+            save_last=True,
+            every_n_epochs=self.trainer_kwargs['save_every'],
+        )
+        callbacks.append(chkpt_callback)
+
+        self.trainer = self.initialize_trainer(logger, callbacks)
             
         self.predicted_pixels, self.scaled_predicted_pixels = None, None
         self.clusters, self.cluster_probs = None, None
@@ -166,25 +187,20 @@ class Mushroom(object):
 
         return section_imgs
     
+    
     def initialize_trainer(
             self,
-            chkpt_callback=None,
-            logger=None
+            logger,
+            callbacks
         ):
-        
-        if logger is None:
-            logger = pl_loggers.TensorBoardLogger()
-        if chkpt_callback is None:
-            chkpt_callback = ModelCheckpoint()
 
         return Trainer(
             devices=self.trainer_kwargs['devices'],
             accelerator=self.trainer_kwargs['accelerator'],
             enable_checkpointing=self.trainer_kwargs['enable_checkpointing'],
-            # log_every_n_epochs=self.trainer_kwargs['log_every_n_epochs'],
-            log_every_n_steps=1,
+            log_every_n_steps=self.trainer_kwargs['log_every_n_steps'],
             max_epochs=self.trainer_kwargs['max_epochs'],
-            callbacks=[chkpt_callback],
+            callbacks=callbacks,
             logger=logger
         )
 
