@@ -85,12 +85,6 @@ class SAE(nn.Module):
 
         self.codebook = nn.Parameter(torch.rand(codebook_size, encoder_dim))
 
-        # self.vq = VectorQuantize(
-        #     dim = encoder_dim,
-        #     codebook_size = codebook_size,     # codebook size
-        # )
-
-        # self.scale_factors = nn.Embedding(self.n_slides, n_channels)
 
     def _kl_divergence(self, z, mu, std):
         # lightning imp.
@@ -107,7 +101,7 @@ class SAE(nn.Module):
         return kl
 
 
-    def encode(self, img, slides, use_means=False):
+    def encode(self, img, slides):
         device = img.device
 
         # get patches
@@ -131,19 +125,7 @@ class SAE(nn.Module):
         # attend with vision transformer
         encoded_tokens = self.encoder.transformer(tokens)
 
-        # encoded_tokens = self.latent_norm(encoded_tokens)
-        mu, log_var = self.latent_mu(encoded_tokens), self.latent_var(encoded_tokens)
-        
-        # sample z from parameterized distributions
-        std = torch.exp(log_var / 2)
-        q = torch.distributions.Normal(mu, std)
-        # get our latent
-        if use_means:
-            z = mu
-        else:
-            z = q.rsample()
-
-        return z, mu, std
+        return encoded_tokens
 
     
     def quantize(self, encoded_tokens):
@@ -171,9 +153,8 @@ class SAE(nn.Module):
         """
         outputs = []
 
-        encoded_tokens_prequant, mu, std  = self.encode(img, slide, use_means=use_means)
+        encoded_tokens_prequant  = self.encode(img, slide)
 
-        # encoded_tokens, probs, hots, clusters = self.quantize(encoded_tokens_prequant)
         encoded_tokens, clusters, probs = self.quantize(encoded_tokens_prequant)
 
         pred_pixel_values = self.decode(encoded_tokens, slide) # (b, n, channels)
@@ -184,7 +165,6 @@ class SAE(nn.Module):
         patches = patches.mean(-2)
 
         recon_loss = F.mse_loss(pred_pixel_values, patches) # (b, n, channels)
-        kl_loss = torch.mean(self._kl_divergence(encoded_tokens_prequant, mu, std))
 
         outputs = {
             'encoded_tokens_prequant': encoded_tokens_prequant,
@@ -206,12 +186,11 @@ class SAE(nn.Module):
         # target = pos_embs[torch.arange(pos_embs.shape[0]), token_idxs]
         # neigh_loss = F.cosine_embedding_loss(pred, target, torch.ones(anchor_embs.shape[0], device=anchor_embs.device))
 
-        overall_loss = recon_loss * self.recon_scaler + kl_loss * self.kl_scaler + neigh_loss * self.neigh_scaler
+        overall_loss = recon_loss * self.recon_scaler + neigh_loss * self.neigh_scaler
 
         losses = {
             'overall_loss': overall_loss,
             'recon_loss': recon_loss,
-            'kl_loss': kl_loss,
             'neigh_loss': neigh_loss,
         }
 
