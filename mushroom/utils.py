@@ -84,7 +84,7 @@ def display_thresholds(cuts, cluster_ids, intensity_df, channel):
     return axs
 
 
-def rescale(x, scale=.1, dim_order='h w c', target_dtype=torch.uint8):
+def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8, antialias=antialias, interpolation=TF.InterpolationMode.BILINEAR):
     is_tensor = isinstance(x, torch.Tensor)
     if not is_tensor:
         x = torch.tensor(x)
@@ -94,7 +94,10 @@ def rescale(x, scale=.1, dim_order='h w c', target_dtype=torch.uint8):
     elif dim_order == 'h w':
         x = rearrange(x, 'h w -> 1 h w')
 
-    x = TF.resize(x, (int(x.shape[-2] * scale), int(x.shape[-1] * scale)), antialias=True)
+    if size is None:
+        size = (int(x.shape[-2] * scale), int(x.shape[-1] * scale))
+
+    x = TF.resize(x, size, antialias=antialias, interpolation=interpolation)
     x = TF.convert_image_dtype(x, target_dtype)
 
     if dim_order == 'h w c':

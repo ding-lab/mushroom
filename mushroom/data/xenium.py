@@ -16,10 +16,10 @@ from torchvision.transforms import Normalize
 from mushroom.data.utils import LearnerData
 import mushroom.data.visium as visium
 
-def get_common_channels(adata):
-    return visium.get_common_channels(adata)
+def get_fullres_size(adata):
+    return visium.get_fullres_size(adata)
 
-def adata_from_xenium(filepath, scaler=.1, normalize=False):
+def adata_from_xenium(filepath, scaler=.1, normalize=False, transcripts=False):
 
     if filepath.split('.')[-1] == 'h5ad':
         adata = sc.read_h5ad(filepath)
@@ -35,11 +35,12 @@ def adata_from_xenium(filepath, scaler=.1, normalize=False):
         adata.obs = df.copy()
         adata.obsm["spatial"] = adata.obs[["x_centroid", "y_centroid"]].copy().to_numpy().astype(int)
 
-        df = pd.read_csv(
-            os.path.join(filepath, 'transcripts.csv.gz')
-        )
-        df = df.set_index('transcript_id')
-        adata.uns['transcripts'] = df.copy()
+        if transcripts:
+            df = pd.read_csv(
+                os.path.join(filepath, 'transcripts.csv.gz')
+            )
+            df = df.set_index('transcript_id')
+            adata.uns['transcripts'] = df.copy()
 
 
         tf = tifffile.TiffFile(os.path.join(filepath, 'morphology_focus.ome.tif'))
