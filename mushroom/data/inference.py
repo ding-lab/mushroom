@@ -1,15 +1,7 @@
-from collections import Counter
-
-import numpy as np
-import seaborn as sns
 import torch
 import torch.nn as nn
 import torchvision.transforms.functional as TF
-import tifffile
 from einops import rearrange
-from ome_types import from_xml
-from skimage.exposure import rescale_intensity
-from tifffile import TiffFile
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, Normalize, RandomCrop, Compose
 

@@ -16,6 +16,8 @@ from torchvision.transforms import Normalize
 from mushroom.data.utils import LearnerData
 import mushroom.data.visium as visium
 
+def get_common_channels(adata):
+    return visium.get_common_channels(adata)
 
 def adata_from_xenium(filepath, scaler=.1, normalize=False):
 
