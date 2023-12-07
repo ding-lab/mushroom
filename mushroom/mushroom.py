@@ -23,7 +23,7 @@ import mushroom.data.visium as visium
 import mushroom.visualization.utils as vis_utils
 from mushroom.model.sae import SAEargs
 from mushroom.model.model import LitMushroom, WandbImageCallback
-from mushroom.data.datasets import get_learner_data
+from mushroom.data.datasets import get_learner_data, construct_training_batch, construct_inference_batch
 import mushroom.utils as utils
 
 
@@ -43,7 +43,6 @@ class Mushroom(object):
         self.channel_mapping = self.trainer_kwargs['channel_mapping']
         self.input_ppm = self.trainer_kwargs['input_ppm']
         self.target_ppm = self.trainer_kwargs['target_ppm']
-        self.channels = self.trainer_kwargs['channels']
         self.contrast_pct = self.trainer_kwargs['contrast_pct']
         self.pct_expression = self.trainer_kwargs['pct_expression']
 
@@ -51,10 +50,10 @@ class Mushroom(object):
         self.size = (self.sae_args.size, self.sae_args.size)
 
         self.learner_data = get_learner_data(self.sections, self.input_ppm, self.target_ppm, self.sae_args.size,
-                                             channels=self.channels, channel_mapping=self.channel_mapping, contrast_pct=self.contrast_pct, pct_expression=self.pct_expression)
+                                             channel_mapping=self.channel_mapping, contrast_pct=self.contrast_pct, pct_expression=self.pct_expression)
         self.section_ids = self.learner_data.train_ds.section_ids
         self.dtypes = self.learner_data.dtypes
-        self.channels = self.learner_data.channels
+        self.dtype_to_channels = self.learner_data.dtype_to_channels
         self.batch_size = self.trainer_kwargs['batch_size']
         self.num_workers = self.trainer_kwargs['num_workers']
 
@@ -63,10 +62,10 @@ class Mushroom(object):
 
         logging.info('creating data loaders')
         self.train_dl = DataLoader(
-            self.learner_data.train_ds, batch_size=self.batch_size, num_workers=self.num_workers
+            self.learner_data.train_ds, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=construct_training_batch
         )
         self.inference_dl = DataLoader(
-            self.learner_data.inference_ds, batch_size=self.batch_size, num_workers=self.num_workers
+            self.learner_data.inference_ds, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=construct_inference_batch
         )
 
         self.model = LitMushroom(
@@ -76,18 +75,6 @@ class Mushroom(object):
         )
 
         logging.info('model initialized')
-
-        # make a groundtruth reconstruction for original images
-        # self.true_imgs = torch.stack(
-        #     [self.learner_data.inference_ds.image_from_tiles(self.learner_data.inference_ds.section_to_tiles[s])
-        #     for s in self.learner_data.inference_ds.section_ids]
-        # ).cpu().detach().numpy()
-        # if self.dtype in ['visium']:
-        #     self.true_imgs = torch.stack(
-        #         [visium.format_expression(
-        #             img, self.learner_data.inference_ds.section_to_adata[sid], self.learner_data.sae_args.patch_size
-        #         ) for sid, img in zip(self.section_ids, self.true_imgs)]
-        #     ).cpu().detach().numpy()
 
         Path(self.trainer_kwargs['log_dir']).mkdir(parents=True, exist_ok=True)
         Path(self.trainer_kwargs['save_dir']).mkdir(parents=True, exist_ok=True)
@@ -124,6 +111,7 @@ class Mushroom(object):
         self.trainer = self.initialize_trainer(logger, callbacks)
             
         self.predicted_pixels, self.scaled_predicted_pixels = None, None
+        self.true_pixels, self.scaled_true_pixels = None, None
         self.clusters, self.cluster_probs = None, None
 
 
@@ -136,7 +124,6 @@ class Mushroom(object):
             mushroom_config['trainer_kwargs']['accelerator'] = 'cpu'
 
         mushroom = Mushroom(
-            mushroom_config['dtype'],
             mushroom_config['sections'],
             sae_kwargs=mushroom_config['sae_kwargs'],
             trainer_kwargs=mushroom_config['trainer_kwargs'],
@@ -149,22 +136,6 @@ class Mushroom(object):
 
         return mushroom
 
-    
-    def _get_section_imgs(self, args):
-        emb_size = int(self.true_imgs.shape[-2] / self.learner_data.train_transform.output_patch_size)
-        section_imgs = TF.resize(self.true_imgs, (emb_size, emb_size), antialias=True)
-
-        if args.background_channels is None and args.mask_background:
-            logging.info('no background channel detected, defaulting to mean of all channels')
-            section_imgs = section_imgs.mean(1)
-        elif args.background_channels is not None:
-            idxs = [self.learner_data.channels.index(channel) for channel in args.background_channels]
-            section_imgs = section_imgs[:, idxs].mean(1)
-        else:
-            section_imgs = None
-
-        return section_imgs
-    
     
     def initialize_trainer(
             self,
@@ -190,11 +161,15 @@ class Mushroom(object):
         outputs = self.trainer.predict(self.model, self.inference_dl)
         formatted = self.model.format_prediction_outputs(outputs)
         self.predicted_pixels = formatted['predicted_pixels'].cpu().clone().detach().numpy()
+        self.true_pixels = formatted['true_pixels'].cpu().clone().detach().numpy()
         self.clusters = formatted['clusters'].cpu().clone().detach().numpy().astype(int)
         self.cluster_probs = formatted['cluster_probs'].cpu().clone().detach().numpy()
 
         scalers = np.amax(self.predicted_pixels, axis=(-2, -1))
         self.scaled_predicted_pixels = self.predicted_pixels / rearrange(scalers, 'n c -> n c 1 1')
+
+        scalers = np.amax(self.true_pixels, axis=(-2, -1))
+        self.scaled_true_pixels = self.true_pixels / rearrange(scalers, 'n c -> n c 1 1')
 
     def get_cluster_intensities(self):
         data = []

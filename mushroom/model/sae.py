@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import Iterable
+from types import MappingProxyType
+from typing import Iterable, Mapping
 
 import numpy as np
 import torch
@@ -16,9 +17,7 @@ class SAEargs:
     patch_size: int = 1
     encoder_dim: int = 256
     codebook_dim: int = 64
-    dtypes: Iterable = ('multiplex', 'visium', 'xenium',)
-    dtype_to_n_channels: dict = {'multiplex':50, 'visium':10000, 'xenium':512}
-    dtype_to_decoder_dims: dict = {'multiplex': (256, 128, 64,), 'visium': (256, 512, 1024 * 2,), 'xenium': (256, 256, 256,)}
+    dtype_to_decoder_dims: Mapping = MappingProxyType({'multiplex': (256, 128, 64,), 'visium': (256, 512, 1024 * 2,), 'xenium': (256, 256, 256,)})
     encoder_depth: int = 6
     heads: int = 8
     mlp_dim: int = 2048
@@ -63,34 +62,6 @@ def intermediate_op(hots, z, b, n, d, c=None):
         zz = rearrange(zz, 'd b n -> b n d')
     return zz
 
-def to_quantized(num_clusters, logits, hots, codebooks):
-    results = []
-    for i, c in enumerate(cs):
-        print(i, c)
-        if i == 0:
-            encoded = hots[i] @ codebooks[i]
-        elif i == 1:
-            z = hots[0] @ codebooks[i]
-            z = rearrange(z, 'b n (c d) -> c (b n d)', c=c, d=d)
-            encoded = intermediate_op(hots[i], z, b, n, d)
-        else:
-            z = hots[0] @ codebooks[i]
-
-            for j in range(2, i+1):
-                a = np.product(cs[j:i+1])
-                print(z.shape)
-                z = rearrange(z, 'b n (c a d) -> c (a b n d)', c=cs[j-1], a=a, d=d)
-                z = intermediate_op(hots[j-1], z, b, n, d, c=a)
-
-                if a != c:
-                    z = rearrange(z, 'a (b n d) -> b n (a d)', b=b, n=n, d=d)
-
-            encoded = intermediate_op(hots[i], z, b, n, d)
-        results.append(encoded)
-    return results
-
-
-
 
 class SAE(nn.Module):
     def __init__(
@@ -110,6 +81,7 @@ class SAE(nn.Module):
         self.recon_scaler = recon_scaler
         self.neigh_scaler = neigh_scaler
         self.num_clusters = num_clusters
+        self.codebook_dim = codebook_dim
 
         self.num_clusters = num_clusters
         self.dtypes = dtypes
@@ -131,15 +103,16 @@ class SAE(nn.Module):
         self.dtype_to_patch = nn.ModuleDict({
             dtype: nn.Sequential(
                 encoder.to_patch_embedding[0],
-                nn.Linear(n * p1 * p2, self.patch_dim),
+                nn.Linear(n * p1 * p2, self.encoder_dim),
             )
             for dtype, n in dtype_to_n_channels.items()
         })
-        self.patch_to_emb = nn.Sequential(*encoder.to_patch_embedding[1:])
+        # self.patch_to_emb = nn.Sequential(*encoder.to_patch_embedding[1:])
 
         self.dtype_to_decoder = nn.ModuleDict({
-            dtype:get_decoder(codebook_dim + self.slide_embedding.shape[-1], dims, dtype_to_n_channels[dtype])
+            dtype:get_decoder(codebook_dim + self.encoder_dim, dims, dtype_to_n_channels[dtype])
             for dtype, dims in self.dtype_to_decoder_dims.items()
+            if dtype in dtype_to_n_channels
         })
 
         self.level_to_logits = nn.ModuleList([nn.Linear(self.encoder_dim, n) for n in self.num_clusters])
@@ -154,7 +127,7 @@ class SAE(nn.Module):
 
 
     def _to_quantized(self, hots):
-        b, n, d = hots.shape[0], hots.shape[1], self.codebook_dim
+        b, n, d = hots[0].shape[0], hots[0].shape[1], self.codebook_dim
         results = []
         for i, c in enumerate(self.num_clusters):
             if i == 0:
@@ -186,16 +159,16 @@ class SAE(nn.Module):
             name = self.dtypes[dtype[0]]
             patches.append(self.dtype_to_patch[name](img)) # b (h w) (p1 p2 c)
 
-        patches = torch.concat(patches, dim=0)
+        tokens = torch.concat(patches, dim=0)
         slides = torch.concat(slides, dim=0)
         dtypes = torch.concat(dtypes, dim=0)
 
-        patches = self.patch_to_emb(patches)
+        # patches = self.patch_to_emb(patches)
 
-        batch, num_patches, *_ = patches.shape
+        batch, num_patches, *_ = tokens.shape
 
-        # patch to encoder tokens
-        tokens = self.patch_to_emb(patches)
+        # # patch to encoder tokens
+        # tokens = self.patch_to_emb(patches)
 
         # add slide emb
         slide_tokens = self.slide_embedding(slides) # b d
@@ -231,13 +204,9 @@ class SAE(nn.Module):
             level_to_probs.append(probs)
         
         level_to_encoded = self._to_quantized(level_to_hots)
-
-        level_to_logits = torch.stack(level_to_logits) # l, b, n, d
-        level_to_hots = torch.stack(level_to_hots)
-        level_to_probs = torch.stack(level_to_probs)
         level_to_encoded = torch.stack(level_to_encoded)
 
-        return level_to_encoded, level_to_probs.argmax(dim=-1), level_to_probs
+        return level_to_encoded, [probs.argmax(dim=-1) for probs in level_to_probs], level_to_probs
     
     def decode(self, level_to_encoded, slide, dtype):
         slide_embs = self.slide_embedding(slide) # b d
@@ -250,17 +219,17 @@ class SAE(nn.Module):
         for label in dtype.unique():
             name = self.dtypes[label]
             mask = dtype==label
-            dtype_to_pred_pixels[name] = self.dtype_to_decoder[name](level_to_encoded[mask])
+            dtype_to_pred_pixels[name] = self.dtype_to_decoder[name](level_to_encoded[:, mask])
 
         return dtype_to_pred_pixels
 
 
-    def forward(self, imgs, slides, dtypes, pairs, is_anchor):
+    def forward(self, imgs, slides, dtypes, pairs=None, is_anchor=None):
         """
-        imgs - list of (b, c, h, w)
-        slides - list of (b,)
-        pairs - list of (b,)
-        dtypes - list of (b,), all entries for each list should have same value
+        imgs - (dtypes, b, c, h, w) where dtypes is number of different dtypes in batch
+        slides - (dtypes, b,)
+        pairs - (dtypes, b,)
+        dtypes - (dtypes, b,), all entries are same value for each dtype
         """
         outputs = []
 
@@ -275,7 +244,7 @@ class SAE(nn.Module):
         # (b c h w)
         dtype_to_true_pixels = {}
         for img, dtype in zip(imgs, dtypes):
-            name = self.dtypes.index(dtype[0])
+            name = self.dtypes[dtype[0]]
             p1 = self.dtype_to_patch[name][0].axes_lengths['p1']
             p2 = self.dtype_to_patch[name][0].axes_lengths['p2']
             patches = rearrange(img, 'b c (h p1) (w p2) -> b (h w) (p1 p2) c',
@@ -291,46 +260,50 @@ class SAE(nn.Module):
             'dtype_to_pred_pixels': dtype_to_pred_pixels,
         }
 
-        dtype_to_recon_loss = {
-            name:F.mse_loss(dtype_to_pred_pixels[name], dtype_to_true_pixels[name])
-            for name in self.dtypes
-        }
+        if pairs is not None and is_anchor is not None:
+            dtype_to_recon_loss = {}
+            for name in self.dtypes:
+                for level, pixel_level in enumerate(dtype_to_pred_pixels[name]):
+                    dtype_to_recon_loss[f'{level}_{name}'] = F.mse_loss(pixel_level, dtype_to_true_pixels[name])
 
-        flat_pairs = torch.concat(pairs, dim=0)
-        flat_is_anchor = torch.concat(is_anchor, dim=0)
-        dtype_to_neigh_loss = {}
-        for i, name in enumerate(self.dtypes):
-            dtype_mask = flat_dtypes==i
+            flat_pairs = torch.concat(pairs, dim=0)
+            flat_is_anchor = torch.concat(is_anchor, dim=0)
+            dtype_to_neigh_loss = {}
+            for level, (clusters, probs) in enumerate(zip(level_to_clusters, level_to_probs)):
 
-            clusters = level_to_clusters[:, dtype_mask]
-            probs = level_to_probs[:, dtype_mask]
+                anchor_mask = flat_is_anchor
+                pos_mask = ~flat_is_anchor
 
-            anchor_mask = flat_is_anchor[dtype_mask]
-            pos_mask = ~flat_is_anchor[dtype_mask]
+                anchor_clusters, anchor_probs = clusters[anchor_mask], probs[anchor_mask]
+                anchor_order = torch.argsort(flat_pairs[anchor_mask])
+                pos_clusters, pos_probs = clusters[pos_mask], probs[pos_mask]
+                pos_order = torch.argsort(flat_pairs[pos_mask])
 
-            anchor_clusters, anchor_probs = clusters[:, anchor_mask], probs[:, anchor_mask]
-            anchor_order = torch.argsort(flat_pairs[dtype_mask][anchor_mask])
-            pos_clusters, pos_probs = clusters[:, pos_mask], probs[:, pos_mask]
-            pos_order = torch.argsort(flat_pairs[dtype_mask][pos_mask])
+                anchor_clusters, pos_clusters = anchor_clusters[anchor_order], pos_clusters[pos_order]
+                anchor_probs, pos_probs = anchor_probs[anchor_order], pos_probs[pos_order]
 
-            anchor_clusters, pos_clusters = anchor_clusters[:, anchor_order], pos_clusters[:, pos_order]
-            anchor_probs, pos_probs = anchor_probs[:, anchor_order], pos_probs[:, pos_order]
+                token_idxs = torch.randint(anchor_probs.shape[1], (anchor_probs.shape[0],))
 
-            token_idxs = torch.randint(anchor_probs.shape[2], (anchor_probs.shape[1],))
+                pred = anchor_probs[torch.arange(anchor_probs.shape[0]), token_idxs]
+                target = pos_clusters[torch.arange(pos_clusters.shape[0]), token_idxs]
+                dtype_to_neigh_loss[f'{level}'] = F.cross_entropy(pred, target)
 
-            pred = anchor_probs[:, torch.arange(anchor_probs.shape[1]), token_idxs]
-            target = pos_clusters[:, torch.arange(pos_clusters.shape[1]), token_idxs]
-            dtype_to_neigh_loss[name] = F.cross_entropy(pred, target)
 
-        # count all dtypes the same for now
-        losses = {}
-        total = 0
-        for name in self.dtypes:
-            losses[f'recon_loss_{name}'] = dtype_to_recon_loss[name]
-            losses[f'neigh_loss_{name}'] = dtype_to_neigh_loss[name]
-            overall = dtype_to_recon_loss[name] * self.recon_scaler + dtype_to_neigh_loss[name] * self.neigh_scaler
-            losses[f'overall_{name}'] = overall
-            total += overall
-        losses['overall_loss'] = total
+            # count all dtypes the same for now
+            losses = {}
+            neigh_total, recon_total = 0, 0
+            for level in range(len(level_to_clusters)):
+                losses[f'neigh_loss_level_{level}'] = dtype_to_neigh_loss[f'{level}']
+                neigh_total += dtype_to_neigh_loss[f'{level}']
+                for name in self.dtypes:
+                    losses[f'recon_loss_{level}_{name}'] = dtype_to_recon_loss[f'{level}_{name}']
+                    recon_total += dtype_to_recon_loss[f'{level}_{name}']
+            losses['recon_loss'] = recon_total
+            losses['neigh_loss'] = neigh_total
+
+            overall = recon_total * self.recon_scaler + neigh_total * self.neigh_scaler
+            losses['overall_loss'] = overall
+        else:
+            losses = {}
 
         return losses, outputs

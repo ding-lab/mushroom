@@ -1,8 +1,9 @@
 import logging
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torchvision.transforms.functional as TF
@@ -20,6 +21,7 @@ DTYPES = ('multiplex', 'xenium', 'visium',)
 
 
 def get_multiplex_section_to_img(config, ppm, target_ppm, channels=None, channel_mapping=None, contrast_pct=None):
+    logging.info(f'starting multiplex processing')
     sid_to_filepaths = {
         entry['id']:d['filepath'] for entry in config for d in entry['data']
         if d['dtype']=='multiplex'
@@ -47,11 +49,12 @@ def get_multiplex_section_to_img(config, ppm, target_ppm, channels=None, channel
     ).mean(0)
     normalize = Normalize(means, stds)
     
-    return section_to_img, normalize
+    return section_to_img, normalize, channels
 
 def get_xenium_section_to_img(
         config, ppm, target_ppm, channels=None, channel_mapping=None
     ):
+    logging.info(f'starting xenium processing')
     sid_to_filepaths = {
         entry['id']:d['filepath'] for entry in config for d in entry['data']
         if d['dtype']=='xenium'
@@ -75,13 +78,14 @@ def get_xenium_section_to_img(
         sid:xenium.adata_from_xenium(fp, normalize=True)
         for sid, fp in sid_to_filepaths.items()
     }
-    section_to_img = {
-        sid:xenium.to_multiplex(adata, tiling_size=tiling_size)
-        for sid, adata in sid_to_filepaths.items()
-    }
-    # reorder channel dim
-    section_to_img = {k:rearrange(img, 'h w c -> c h w') for k, img in section_to_img.items()}
 
+    section_to_img = {}
+    for sid, adata in section_to_adata.items():
+        logging.info(f'generating image data for section {sid}')
+        img = xenium.to_multiplex(adata, tiling_size=tiling_size)
+        img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
+        section_to_img[sid] = img
+   
     means = torch.cat(
         [x.mean(dim=(-2, -1)).unsqueeze(0) for x in section_to_img.values()]
     ).mean(0)
@@ -90,12 +94,13 @@ def get_xenium_section_to_img(
     ).mean(0)
     normalize = Normalize(means, stds)
 
-    return section_to_img, section_to_adata, normalize
+    return section_to_img, section_to_adata, normalize, channels
 
 
 def get_visium_section_to_img(
         config, target_ppm, channels=None, channel_mapping=None, pct_expression=.02
     ):
+    logging.info(f'starting visium processing')
     sid_to_filepaths = {
         entry['id']:d['filepath'] for entry in config for d in entry['data']
         if d['dtype']=='visium'
@@ -129,11 +134,10 @@ def get_visium_section_to_img(
     ).mean(0)).squeeze()
     normalize = Normalize(means, stds)
 
-    return section_to_img, section_to_adata, normalize
+    return section_to_img, section_to_adata, normalize, channels
 
 
-
-def get_learner_data(config, ppm, target_ppm, tile_size, channels=None, channel_mapping=None, contrast_pct=None, pct_expression=.02):
+def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, contrast_pct=None, pct_expression=.02):
 
     # all images must be same size
     dtypes = sorted({d['dtype'] for entry in config for d in entry['data']})
@@ -142,21 +146,23 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channels=None, channel_
     dtype_to_section_to_img = {}
     dtype_to_norm = {}
     dtype_to_section_to_adata = {}
+    dtype_to_channels = {}
 
     for dtype in dtypes:
         if dtype == 'multiplex':
-            section_to_img, norm = get_multiplex_section_to_img(config, ppm, target_ppm, channels=channels, channel_mapping=channel_mapping, contrast_pct=contrast_pct)
+            section_to_img, norm, channels = get_multiplex_section_to_img(config, ppm, target_ppm, channel_mapping=channel_mapping, contrast_pct=contrast_pct)
             section_to_adata = None
         elif dtype == 'xenium':
-            section_to_img, section_to_adata, norm = get_xenium_section_to_img(config, ppm, target_ppm, channels=channels, channel_mapping=channel_mapping)
+            section_to_img, section_to_adata, norm, channels = get_xenium_section_to_img(config, ppm, target_ppm, channel_mapping=channel_mapping)
         elif dtype == 'visium':
-            section_to_img, section_to_adata, norm = get_visium_section_to_img(config, target_ppm, channels=channels, channel_mapping=channel_mapping, pct_expression=pct_expression)
+            section_to_img, section_to_adata, norm, channels = get_visium_section_to_img(config, target_ppm, channel_mapping=channel_mapping, pct_expression=pct_expression)
         else:
             raise RuntimeError(f'dtype {dtype} is not a valid data type')
         
         dtype_to_section_to_img[dtype] = section_to_img
         dtype_to_norm[dtype] = norm
         dtype_to_section_to_adata[dtype] = section_to_adata
+        dtype_to_channels[dtype] = channels
 
     # image sizes are a few pixels off sometimes, adjusting for that
     sizes = [(img.shape[-2], img.shape[-1]) for section_to_img in dtype_to_section_to_img.values() for img in section_to_img.values()]
@@ -164,12 +170,12 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channels=None, channel_
     target_size = sizes[idx]
     for dtype, section_to_img in dtype_to_section_to_img.items():
         section_to_img = {sid:utils.rescale(img, size=target_size, dim_order='c h w', target_dtype=img.dtype) for sid, img in section_to_img.items()}
-    assert len({(img.shape[-2], img.shape[-1]) for section_to_img in dtype_to_section_to_img.values() for img in section_to_img.values()}) == 1
+        dtype_to_section_to_img[dtype] = section_to_img
+    assert len(set((img.shape[-2], img.shape[-1]) for section_to_img in dtype_to_section_to_img.values() for img in section_to_img.values())) == 1
 
 
     train_transform = ImageTrainingTransform(target_size[-2], target_size[-1], dtype_to_norm, size=(tile_size, tile_size))
     inference_transform = ImageInferenceTransform(target_size[-2], target_size[-1], dtype_to_norm, size=(tile_size, tile_size))
-# sections, dtypes, dtype_to_section_to_imgs, transform=None, n=None
     logging.info('generating training dataset')
     train_ds = ImageTrainingDataset(
         section_ids, dtypes, dtype_to_section_to_img, transform=train_transform
@@ -178,6 +184,10 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channels=None, channel_
     inference_ds = ImageInferenceDataset(
         section_ids, dtypes, dtype_to_section_to_img, transform=inference_transform
     )
+
+    logging.info(f'total of {len(train_ds.section_ids)} sections detected: {train_ds.section_ids}')
+    
+    dtype_to_n_channels = {dtype:len(channels) for dtype, channels in dtype_to_channels.items()}
     
     learner_data = LearnerData(
         dtype_to_section_to_img=dtype_to_section_to_img,
@@ -185,11 +195,73 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channels=None, channel_
         inference_transform=inference_transform,
         train_ds=train_ds,
         inference_ds=inference_ds,
-        channels=channels,
-        dtypes=dtypes
+        dtypes=dtypes,
+        dtype_to_n_channels=dtype_to_n_channels,
+        dtype_to_channels=dtype_to_channels,
     )
 
     return learner_data
+
+def construct_training_batch(batch):
+    dtype_pool = sorted(set([entry['anchor_dtype_idx'] for entry in batch]).union([entry['pos_dtype_idx'] for entry in batch]))
+    to_return = {
+        'tiles': {x:[] for x in dtype_pool},
+        'slides': {x:[] for x in dtype_pool},
+        'dtypes': {x:[] for x in dtype_pool},
+        'pairs': {x:[] for x in dtype_pool},
+        'is_anchor': {x:[] for x in dtype_pool},
+    }
+
+    for i, entry in enumerate(batch):
+        dtype_idx = entry['anchor_dtype_idx']
+        to_return['tiles'][dtype_idx].append(entry['anchor_tile'])
+        to_return['slides'][dtype_idx].append(entry['anchor_slide_idx'])
+        to_return['dtypes'][dtype_idx].append(entry['anchor_dtype_idx'])
+        to_return['pairs'][dtype_idx].append(i)
+        to_return['is_anchor'][dtype_idx].append(True)
+
+        dtype_idx = entry['pos_dtype_idx']
+        to_return['tiles'][dtype_idx].append(entry['pos_tile'])
+        to_return['slides'][dtype_idx].append(entry['pos_slide_idx'])
+        to_return['dtypes'][dtype_idx].append(entry['pos_dtype_idx'])
+        to_return['pairs'][dtype_idx].append(i)
+        to_return['is_anchor'][dtype_idx].append(False)
+
+    to_return['tiles'] = [torch.stack(to_return['tiles'][k]) for k in dtype_pool]
+    to_return['slides'] = [torch.tensor(to_return['slides'][k], dtype=torch.long) for k in dtype_pool]
+    to_return['dtypes'] = [torch.tensor(to_return['dtypes'][k], dtype=torch.long) for k in dtype_pool]
+    to_return['pairs'] = [torch.tensor(to_return['pairs'][k], dtype=torch.long) for k in dtype_pool]
+    to_return['is_anchor'] = [torch.tensor(to_return['is_anchor'][k], dtype=torch.bool) for k in dtype_pool]
+    # to_return['tiles'] = torch.nested.nested_tensor([torch.stack(to_return['tiles'][k]) for k in dtype_pool])
+    # to_return['slides'] = torch.nested.nested_tensor([torch.tensor(to_return['slides'][k], dtype=torch.long) for k in dtype_pool])
+    # to_return['dtypes'] = torch.nested.nested_tensor([torch.tensor(to_return['dtypes'][k], dtype=torch.long) for k in dtype_pool])
+    # to_return['pairs'] = torch.nested.nested_tensor([torch.tensor(to_return['pairs'][k], dtype=torch.long) for k in dtype_pool])
+    # to_return['is_anchor'] = torch.nested.nested_tensor([torch.tensor(to_return['pairs'][k], dtype=torch.bool) for k in dtype_pool])
+
+    return to_return
+
+def construct_inference_batch(batch):
+    dtype_pool = sorted(set([entry['dtype_idx'] for entry in batch]))
+    to_return = {
+        'tiles': {x:[] for x in dtype_pool},
+        'slides': {x:[] for x in dtype_pool},
+        'dtypes': {x:[] for x in dtype_pool},
+    }
+
+    for i, entry in enumerate(batch):
+        dtype_idx = entry['dtype_idx']
+        to_return['tiles'][dtype_idx].append(entry['tile'])
+        to_return['slides'][dtype_idx].append(entry['idx'])
+        to_return['dtypes'][dtype_idx].append(entry['dtype_idx'])
+
+    to_return['tiles'] = [torch.stack(to_return['tiles'][k]) for k in dtype_pool]
+    to_return['slides'] = [torch.tensor(to_return['slides'][k], dtype=torch.long) for k in dtype_pool]
+    to_return['dtypes'] = [torch.tensor(to_return['dtypes'][k], dtype=torch.long) for k in dtype_pool]  
+    # to_return['tiles'] = torch.nested.nested_tensor([torch.stack(to_return['tiles'][k]) for k in dtype_pool])
+    # to_return['slides'] = torch.nested.nested_tensor([torch.tensor(to_return['slides'][k], dtype=torch.long) for k in dtype_pool])
+    # to_return['dtypes'] = torch.nested.nested_tensor([torch.tensor(to_return['dtypes'][k], dtype=torch.long) for k in dtype_pool])
+
+    return to_return
 
 
 class ImageTrainingTransform(object):
@@ -226,11 +298,15 @@ class ImageInferenceTransform(object):
     
 class ImageTrainingDataset(Dataset):
     def __init__(self, sections, dtypes, dtype_to_section_to_imgs, transform=None, n=None):
-        self.section_to_img = {(sid, dtype):img if len(img.shape)==3 else img.unsqueeze(0) for dtype, d in dtype_to_section_to_imgs.items() for sid, img in dtype_to_section_to_imgs.keys()}
-        section_to_keys = {sid:(sid, dtype) for sid, dtype in self.section_to_img.keys()}
+        self.section_to_img = {}
+        for dtype, d in dtype_to_section_to_imgs.items():
+            for sid, img in d.items():
+                img = img if len(img.shape)==3 else img.unsqueeze(0)
+                self.section_to_img[(sid, dtype)] = img
         self.section_ids = []
         for section in sections:
-            self.section_ids += section_to_keys[section]
+            self.section_ids += [(s, dtype) for s, dtype in self.section_to_img.keys() if s==section]
+        self.section_idxs = np.arange(len(self.section_ids))
         self.dtypes = dtypes
 
         self.size = next(iter(self.section_to_img.values())).shape[-2:]
@@ -243,9 +319,9 @@ class ImageTrainingDataset(Dataset):
         return self.n
 
     def __getitem__(self, idx):
-        anchor_section = np.random.choice(self.section_ids)
+        anchor_idx = np.random.choice(self.section_idxs)
+        anchor_section = self.section_ids[anchor_idx]
         anchor_dtype = anchor_section[1]
-        anchor_idx = self.section_ids.index(anchor_section)
 
         if anchor_idx == 0:
             pos_idx = 1
@@ -272,18 +348,38 @@ class ImageTrainingDataset(Dataset):
             'anchor_dtype_idx': anchor_dtype_idx,
             'pos_dtype_idx': pos_dtype_idx,
         }
+    
+    def display_batch(self, batch, idx, dtype_to_channels, display_channels={'xenium': 'EPCAM', 'multiplex': 'E-Cadherin'}):
+        items = []
+        for position, dtype in enumerate(self.dtypes):
+            if idx in batch['pairs'][position]:
+                mask = batch['pairs'][position]==idx
+                items.append({k:v[position][mask][0] for k, v in batch.items()})
+
+        fig, axs = plt.subplots(ncols=len(items))
+        for ax, item in zip(axs, items):
+            dtype = self.dtypes[item['dtypes']]
+            slide = item['slides']
+            is_anchor = item['is_anchor']
+            channel = display_channels[dtype]
+            ax.imshow(item['tiles'][dtype_to_channels[dtype].index(channel)])
+            ax.axis('off')
+            ax.set_title(f'{dtype} {slide} {is_anchor} {channel}')
 
 
 class ImageInferenceDataset(Dataset):
     def __init__(self, sections, dtypes, dtype_to_section_to_imgs, tile_size=(8, 8), transform=None):
         """"""
-        self.section_to_img = {(sid, dtype):img if len(img.shape)==3 else img.unsqueeze(0) for dtype, d in dtype_to_section_to_imgs.items() for sid, img in dtype_to_section_to_imgs.keys()}
-        section_to_keys = {sid:(sid, dtype) for sid, dtype in self.section_to_img.keys()}
+        self.section_to_img = {}
+        for dtype, d in dtype_to_section_to_imgs.items():
+            for sid, img in d.items():
+                img = img if len(img.shape)==3 else img.unsqueeze(0)
+                self.section_to_img[(sid, dtype)] = img
         self.section_ids = []
         for section in sections:
-            self.section_ids += section_to_keys[section]
-        self.dtypes = dtypes
+            self.section_ids += [(s, dtype) for s, dtype in self.section_to_img.keys() if s==section]
 
+        self.dtypes = dtypes
         self.tile_size = tile_size
         self.size = next(iter(self.section_to_img.values())).shape[-2:]
         
@@ -354,10 +450,11 @@ class ImageInferenceDataset(Dataset):
 
 @dataclass
 class LearnerData:
-    dtype_to_section_to_img: dict
+    dtype_to_section_to_img: Mapping
     train_transform: ImageTrainingTransform
     inference_transform: ImageInferenceTransform
     train_ds: ImageTrainingDataset
     inference_ds: ImageInferenceDataset
-    channels: Iterable
     dtypes: Iterable
+    dtype_to_n_channels: Mapping
+    dtype_to_channels: Mapping

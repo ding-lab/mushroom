@@ -84,7 +84,7 @@ def display_thresholds(cuts, cluster_ids, intensity_df, channel):
     return axs
 
 
-def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8, antialias=antialias, interpolation=TF.InterpolationMode.BILINEAR):
+def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8, antialias=True, interpolation=TF.InterpolationMode.BILINEAR):
     is_tensor = isinstance(x, torch.Tensor)
     if not is_tensor:
         x = torch.tensor(x)

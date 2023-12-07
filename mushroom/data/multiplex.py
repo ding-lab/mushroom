@@ -155,7 +155,7 @@ def get_section_to_image(sid_to_filepaths, channels, channel_mapping=None, scale
                 vmax = np.percentile(bw[bw>0], (contrast_pct), axis=-1) if np.count_nonzero(bw) else 1.
                 imgs[i] = rescale_intensity(bw, in_range=(0., vmax))
 
-        imgs = torch.tensor(imgs)
+        imgs = torch.tensor(imgs, dtype=torch.float32)
         
         section_to_img[sid] = imgs
     return section_to_img
