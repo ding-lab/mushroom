@@ -12,10 +12,10 @@ from vector_quantize_pytorch import VectorQuantize
 
 @dataclass
 class SAEargs:
-    size: int = 256
-    patch_size: int = 32
+    size: int = 8
+    patch_size: int = 1
     encoder_dim: int = 256
-    codebook_dim: int = 256
+    codebook_dim: int = 64
     dtypes: Iterable = ('multiplex', 'visium', 'xenium',)
     dtype_to_n_channels: dict = {'multiplex':50, 'visium':10000, 'xenium':512}
     dtype_to_decoder_dims: dict = {'multiplex': (256, 128, 64,), 'visium': (256, 512, 1024 * 2,), 'xenium': (256, 256, 256,)}

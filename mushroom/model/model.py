@@ -20,12 +20,11 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 
 
 class WandbImageCallback(Callback):
-    def __init__(self, wandb_logger, learner_data, inference_dl, true_pixels, channel=None):
+    def __init__(self, wandb_logger, learner_data, inference_dl, channel=None):
         # super.__init__()
         self.logger = wandb_logger
         self.inference_dl = inference_dl
         self.learner_data = learner_data
-        self.true_pixels = true_pixels
         self.channel = channel if channel is not None else self.learner_data.channels[0]
 
 
@@ -44,6 +43,7 @@ class WandbImageCallback(Callback):
     
         formatted = pl_module.format_prediction_outputs(outputs)
         predicted_pixels = formatted['predicted_pixels'].cpu().clone().detach().numpy()
+        true_pixels = formatted['true_pixels'].cpu().clone().detach().numpy()
         clusters = formatted['clusters'].cpu().clone().detach().numpy().astype(int)
 
         self.logger.log_image(
@@ -53,8 +53,8 @@ class WandbImageCallback(Callback):
         )
         self.logger.log_image(
             key=f'true pixels {self.channel}',
-            images=[img[self.learner_data.channels.index(self.channel)] for img in self.true_pixels],
-            caption=[str(i) for i in range(len(self.true_pixels))]
+            images=[img[self.learner_data.channels.index(self.channel)] for img in true_pixels],
+            caption=[str(i) for i in range(len(true_pixels))]
         )
         self.logger.log_image(
             key='predicted pixels first section',
@@ -96,13 +96,14 @@ class LitMushroom(LightningModule):
             channels=len(learner_data.channels),
         )
 
+        dtype_to_n_channels = {dtype:next(iter(section_to_img.values())).shape[0] for dtype, section_to_img in self.learner_data.dtype_to_section_to_img.items()}
         self.sae = SAE(
             encoder=encoder,
-            n_slides=len(learner_data.section_to_img),
-            n_channels=len(learner_data.channels),
-            decoder_dims=sae_args.decoder_dims,
-            codebook_size=sae_args.codebook_size,
-            kl_scaler=sae_args.kl_scaler,
+            n_slides=len(self.learner_data.train_ds.section_ids),
+            dtypes=self.learner_data.dtypes,
+            dtype_to_n_channels=dtype_to_n_channels,
+            codebook_dim=self.sae_args.codebook_dim,
+            dtype_to_decoder_dims=self.sae_args.dtype_to_decoder_dims,
             recon_scaler=sae_args.recon_scaler,
             neigh_scaler=sae_args.neigh_scaler
         )
@@ -114,15 +115,15 @@ class LitMushroom(LightningModule):
         return optimizer
 
     def training_step(self, batch, batch_idx):
-        anchor_x, anchor_slide = batch['anchor_tile'], batch['anchor_idx']
-        pos_x, pos_slide = batch['pos_tile'], batch['pos_idx']
-        outs = self.forward(anchor_x, anchor_slide, pos_x=pos_x, pos_slide=pos_slide)
+        anchor_x, anchor_slide, anchor_dtype = batch['anchor_tile'], batch['anchor_idx'], batch['anchor_dtype_idx']
+        pos_x, pos_slide, pos_dtype = batch['pos_tile'], batch['pos_idx'], batch['pos_dtype_idx']
+        outs = self.forward(anchor_x, anchor_slide, anchor_dtype, pos_x=pos_x, pos_slide=pos_slide, pos_dtype)
         self.log_dict({k:v for k, v in outs.items() if k!='outputs'}, on_step=True, on_epoch=False, prog_bar=True)
         return outs
     
     def predict_step(self, batch):
-        x, slide = batch['tile'], batch['idx']
-        return self.forward(x, slide)
+        x, slide, dtype = batch['tile'], batch['idx'], batch['dtype_idx']
+        return self.forward(x, slide, dtype)
     
     def format_prediction_outputs(self, outputs):
         n = len(self.learner_data.inference_ds)
@@ -131,12 +132,17 @@ class LitMushroom(LightningModule):
         cluster_ids = torch.zeros(n, num_patches, num_patches)
         cluster_probs = torch.zeros(n, num_patches, num_patches, self.sae_args.codebook_size)
         pred_patches = torch.zeros(n, self.n_channels, num_patches, num_patches)
+        true_patches = torch.zeros(n, self.n_channels, num_patches, num_patches)
 
         bs = outputs[0]['outputs']['clusters'].shape[0]
 
         for i, output in enumerate(outputs):
             pred_pixel_values = rearrange(
                 output['outputs']['pred_pixel_values'], 'b (h w) c -> b c h w',
+                h=num_patches, w=num_patches,
+                c=self.n_channels)
+            true_pixel_values = rearrange(
+                output['outputs']['true_pixel_values'], 'b (h w) c -> b c h w',
                 h=num_patches, w=num_patches,
                 c=self.n_channels)
             clusters = rearrange(
@@ -149,42 +155,54 @@ class LitMushroom(LightningModule):
             )
             start, stop = i * bs, (i * bs) + output['outputs']['clusters'].shape[0]
             pred_patches[start:stop] = pred_pixel_values.cpu().detach()
+            true_patches[start:stop] = true_pixel_values.cpu().detach()
             cluster_ids[start:stop] = clusters.cpu().detach()
             cluster_probs[start:stop] = probs.cpu().detach()
 
-        recon_imgs = torch.stack(
+        predicted_pixels = torch.stack(
             [self.learner_data.inference_ds.section_from_tiles(
                 pred_patches, i, size=(num_patches, num_patches)
-            ) for i in range(len(self.learner_data.inference_ds.sections))]
+            ) for i in range(len(self.learner_data.inference_ds.section_ids))]
+        )
+        true_pixels = torch.stack(
+            [self.learner_data.inference_ds.section_from_tiles(
+                true_patches, i, size=(num_patches, num_patches)
+            ) for i in range(len(self.learner_data.inference_ds.section_ids))]
         )
         recon_cluster_ids = torch.stack(
             [self.learner_data.inference_ds.section_from_tiles(
                 rearrange(cluster_ids, 'n h w -> n 1 h w'),
                 i, size=(num_patches, num_patches))
-                for i in range(len(self.learner_data.inference_ds.sections))] 
+                for i in range(len(self.learner_data.inference_ds.section_ids))] 
         ).squeeze(1)
         recon_cluster_probs = torch.stack(
             [self.learner_data.inference_ds.section_from_tiles(
                 rearrange(cluster_probs, 'n h w c -> n c h w'),
                 i, size=(num_patches, num_patches))
-                for i in range(len(self.learner_data.inference_ds.sections))] 
+                for i in range(len(self.learner_data.inference_ds.section_ids))] 
         )
 
         return {
-            'predicted_pixels': recon_imgs,
+            'predicted_pixels': predicted_pixels,
+            'true_pixels': true_pixels,
             'clusters': recon_cluster_ids,
-            'cluster_probs': recon_cluster_probs
+            'cluster_probs': recon_cluster_probs,
         }
     
-    def forward(self, anchor_x, anchor_slide, pos_x=None, pos_slide=None):
+    def forward(self, anchor_x, anchor_slide, anchor_dtype, pos_x=None, pos_slide=None, pos_dtype):
         if pos_x is not None:
             x = torch.concat((anchor_x, pos_x))
             slide = torch.concat((anchor_slide, pos_slide))
+            dtype = torch.concat((anchor_dtype, pos_dtype))
         else:
             x = anchor_x
             slide = anchor_slide
+            dtype = anchor_dtype
 
-        losses, outputs = self.sae(x, slide)
+        # pairs, is_anchor 
+        # your dataloader wont work due to different sizes
+
+        losses, outputs = self.sae(x, slide, dtype)
         losses['loss'] = losses['overall_loss']
         losses['outputs'] = outputs
 

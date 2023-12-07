@@ -23,29 +23,26 @@ import mushroom.data.visium as visium
 import mushroom.visualization.utils as vis_utils
 from mushroom.model.sae import SAEargs
 from mushroom.model.model import LitMushroom, WandbImageCallback
+from mushroom.data.datasets import get_learner_data
 import mushroom.utils as utils
 
 
 class Mushroom(object):
     def __init__(
             self,
-            dtype,
             sections,
             chkpt_filepath=None,
             sae_kwargs=None,
             trainer_kwargs=None,
         ):
-        self.dtype = dtype
         self.sections = sections
         self.chkpt_filepath = chkpt_filepath
         self.sae_kwargs = sae_kwargs
         self.trainer_kwargs = trainer_kwargs
-        self.section_ids = [entry['id'] for entry in self.sections
-                       if dtype in [d['dtype'] for d in entry['data']]]
 
-        self.dtype = dtype
         self.channel_mapping = self.trainer_kwargs['channel_mapping']
-        self.scale = self.trainer_kwargs['scale']
+        self.input_ppm = self.trainer_kwargs['input_ppm']
+        self.target_ppm = self.trainer_kwargs['target_ppm']
         self.channels = self.trainer_kwargs['channels']
         self.contrast_pct = self.trainer_kwargs['contrast_pct']
         self.pct_expression = self.trainer_kwargs['pct_expression']
@@ -53,29 +50,10 @@ class Mushroom(object):
         self.sae_args = SAEargs(**self.sae_kwargs) if self.sae_kwargs is not None else {}
         self.size = (self.sae_args.size, self.sae_args.size)
 
-        
-
-        logging.info(f'generating inputs for {self.dtype} tissue sections')
-        if self.dtype == 'multiplex':
-            self.learner_data = multiplex.get_learner_data(
-                self.sections, self.scale, self.size, self.sae_args.patch_size,
-                channels=self.channels, channel_mapping=self.channel_mapping, contrast_pct=self.contrast_pct,
-            )
-        elif self.dtype == 'xenium':
-            self.learner_data = xenium.get_learner_data(
-                self.sections, self.scale, self.size, self.sae_args.patch_size,
-                channels=self.channels, channel_mapping=self.channel_mapping,
-            )
-        elif self.dtype == 'he':
-            pass
-        elif self.dtype == 'visium':
-            self.learner_data = visium.get_learner_data(
-                self.sections, self.scale, self.size, self.sae_args.patch_size,
-                channels=self.channels, channel_mapping=self.channel_mapping, pct_expression=self.pct_expression,
-            )
-        else:
-            raise RuntimeError(f'dtype must be one of the following: \
-["multiplex", "he", "visium", "xenium"], got {self.dtype}')
+        self.learner_data = get_learner_data(self.sections, self.input_ppm, self.target_ppm, self.sae_args.size,
+                                             channels=self.channels, channel_mapping=self.channel_mapping, contrast_pct=self.contrast_pct, pct_expression=self.pct_expression)
+        self.section_ids = self.learner_data.train_ds.section_ids
+        self.dtypes = self.learner_data.dtypes
         self.channels = self.learner_data.channels
         self.batch_size = self.trainer_kwargs['batch_size']
         self.num_workers = self.trainer_kwargs['num_workers']
@@ -100,16 +78,16 @@ class Mushroom(object):
         logging.info('model initialized')
 
         # make a groundtruth reconstruction for original images
-        self.true_imgs = torch.stack(
-            [self.learner_data.inference_ds.image_from_tiles(self.learner_data.inference_ds.section_to_tiles[s])
-            for s in self.learner_data.inference_ds.sections]
-        ).cpu().detach().numpy()
-        if self.dtype in ['visium']:
-            self.true_imgs = torch.stack(
-                [visium.format_expression(
-                    img, self.learner_data.inference_ds.section_to_adata[sid], self.learner_data.sae_args.patch_size
-                ) for sid, img in zip(self.section_ids, self.true_imgs)]
-            ).cpu().detach().numpy()
+        # self.true_imgs = torch.stack(
+        #     [self.learner_data.inference_ds.image_from_tiles(self.learner_data.inference_ds.section_to_tiles[s])
+        #     for s in self.learner_data.inference_ds.section_ids]
+        # ).cpu().detach().numpy()
+        # if self.dtype in ['visium']:
+        #     self.true_imgs = torch.stack(
+        #         [visium.format_expression(
+        #             img, self.learner_data.inference_ds.section_to_adata[sid], self.learner_data.sae_args.patch_size
+        #         ) for sid, img in zip(self.section_ids, self.true_imgs)]
+        #     ).cpu().detach().numpy()
 
         Path(self.trainer_kwargs['log_dir']).mkdir(parents=True, exist_ok=True)
         Path(self.trainer_kwargs['save_dir']).mkdir(parents=True, exist_ok=True)
@@ -127,7 +105,7 @@ class Mushroom(object):
             })
 
             logging_callback = WandbImageCallback(
-                logger, self.learner_data, self.inference_dl, self.true_imgs,
+                logger, self.learner_data, self.inference_dl,
                 channel=self.trainer_kwargs['logger_channel']
             )
             callbacks.append(logging_callback)

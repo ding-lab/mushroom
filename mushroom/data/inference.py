@@ -17,7 +17,7 @@ class InferenceTransform(object):
     
 
 class InferenceSectionDataset(Dataset):
-    def __init__(self, sections, section_to_img, size=(256, 256), transform=None):
+    def __init__(self, sections, section_to_img, size=(8, 8), transform=None):
         """"""
         self.size = size
         self.sections = sorted(section_to_img.keys())
@@ -39,7 +39,7 @@ class InferenceSectionDataset(Dataset):
 
         self.transform = transform if transform is not None else nn.Identity()
         
-    def to_tiles(self, x, size=None):
+    def to_tiles(self, x):
         size = self.size if size is None else size
         pad_h, pad_w = size[-2] - x.shape[-2] % size[-2], size[-1] - x.shape[-1] % size[-1]
         # left, top, right and bottom
