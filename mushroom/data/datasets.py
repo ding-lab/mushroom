@@ -418,18 +418,27 @@ class ImageInferenceDataset(Dataset):
     
     def section_from_tiles(self, x, section_idx, tile_size=None):
         """
-        x - (n c h w)
+        x - (n h w c) or (n hw c)
         """
         tile_size = self.tile_size if tile_size is None else tile_size
         mask = self.idx_to_coord[:, 0]==section_idx
-        tiles = x[mask]
+
+        if isinstance(x, list):
+            tiles = torch.stack([val for val, keep in zip(x, mask) if keep])
+        else:
+            tiles = x[mask]
+
+        if len(tiles.shape) == 3:
+            tiles = rearrange(tiles, 'n (h w) c -> n h w c', h=tile_size[0], w=tile_size[1])
+        
         ph, pw = self.idx_to_coord[mask, 1].max() + 1, self.idx_to_coord[mask, 2].max() + 1
         
-        out = torch.zeros(ph, pw, x.shape[1], tile_size[0], tile_size[1])
+        out = torch.zeros(ph, pw, tile_size[0], tile_size[1], tiles.shape[-1], dtype=tiles.dtype)
         for idx, (_, r, c) in enumerate(self.idx_to_coord[mask]):
             out[r, c] = tiles[idx]
         
-        return self.image_from_tiles(out)
+        out = rearrange(out, 'ph pw h w c -> ph pw c h w')
+        return rearrange(self.image_from_tiles(out), 'c h w -> h w c')
 
     def __len__(self):
         return self.idx_to_coord.shape[0]

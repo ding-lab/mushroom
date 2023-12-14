@@ -112,7 +112,7 @@ class Mushroom(object):
             
         self.predicted_pixels, self.scaled_predicted_pixels = None, None
         self.true_pixels, self.scaled_true_pixels = None, None
-        self.clusters, self.cluster_probs = None, None
+        self.clusters, self.agg_clusters, self.cluster_probs = None, None, None
 
 
     @staticmethod
@@ -160,16 +160,17 @@ class Mushroom(object):
     def embed_sections(self):
         outputs = self.trainer.predict(self.model, self.inference_dl)
         formatted = self.model.format_prediction_outputs(outputs)
-        self.predicted_pixels = formatted['predicted_pixels'].cpu().clone().detach().numpy()
-        self.true_pixels = formatted['true_pixels'].cpu().clone().detach().numpy()
-        self.clusters = formatted['clusters'].cpu().clone().detach().numpy().astype(int)
-        self.cluster_probs = formatted['cluster_probs'].cpu().clone().detach().numpy()
+        self.predicted_pixels = [[z.cpu().clone().detach().numpy() for z in x] for x in formatted['predicted_pixels']]
+        self.true_pixels = [x.cpu().clone().detach().numpy() for x in formatted['true_pixels']]
+        self.clusters = [x for x in formatted['clusters']]
+        self.agg_clusters = [x.cpu().clone().detach().numpy().astype(int) for x in formatted['agg_clusters']]
+        self.cluster_probs = [x.cpu().clone().detach().numpy() for x in formatted['cluster_probs']]
 
-        scalers = np.amax(self.predicted_pixels, axis=(-2, -1))
-        self.scaled_predicted_pixels = self.predicted_pixels / rearrange(scalers, 'n c -> n c 1 1')
+        # scalers = [np.amax(x, axis=(-2, -1)) for x in self.predicted_pixels]
+        # self.scaled_predicted_pixels = [xp / rearrange(xs, 'c -> c 1 1') for xp, xs in zip(self.predicted_pixels, scalers)]
 
-        scalers = np.amax(self.true_pixels, axis=(-2, -1))
-        self.scaled_true_pixels = self.true_pixels / rearrange(scalers, 'n c -> n c 1 1')
+        # scalers = np.amax(self.true_pixels, axis=(-2, -1))
+        # self.scaled_true_pixels = self.true_pixels / rearrange(scalers, 'n c -> n c 1 1')
 
     def get_cluster_intensities(self):
         data = []

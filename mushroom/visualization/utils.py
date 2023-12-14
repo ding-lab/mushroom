@@ -15,7 +15,7 @@ import mushroom.data.he as he
 def get_cmap(n):
     if n <= 10:
         return sns.color_palette()
-    if n <= 20:
+    if n < 20:
         return sns.color_palette('tab20')
     
     iters = (n // 20) + 1

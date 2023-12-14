@@ -49,18 +49,18 @@ def get_decoder(in_dim, decoder_dims, n_channels):
     ))
     return nn.Sequential(*blocks)
 
-def intermediate_op(hots, z, b, n, d, c=None):
-    if c is not None:
-        zz = hots @ z
-        zz = rearrange(zz, 'b1 n1 (c b2 n2 d) -> b1 b2 n1 n2 c d', c=c, b2=b, n2=n, d=d)
-        zz = torch.diagonal(torch.diagonal(zz))
-        zz = rearrange(zz, 'c d b n -> c (b n d)')
-    else:
-        zz = hots @ z
-        zz = rearrange(zz, 'b1 n1 (b2 n2 d) -> b1 b2 n1 n2 d', b2=b, n2=n, d=d)
-        zz = torch.diagonal(torch.diagonal(zz))
-        zz = rearrange(zz, 'd b n -> b n d')
-    return zz
+# def intermediate_op(hots, z, b, n, d, c=None):
+#     if c is not None:
+#         zz = hots @ z
+#         zz = rearrange(zz, 'b1 n1 (c b2 n2 d) -> b1 b2 n1 n2 c d', c=c, b2=b, n2=n, d=d)
+#         zz = torch.diagonal(torch.diagonal(zz))
+#         zz = rearrange(zz, 'c d b n -> c (b n d)')
+#     else:
+#         zz = hots @ z
+#         zz = rearrange(zz, 'b1 n1 (b2 n2 d) -> b1 b2 n1 n2 d', b2=b, n2=n, d=d)
+#         zz = torch.diagonal(torch.diagonal(zz))
+#         zz = rearrange(zz, 'd b n -> b n d')
+#     return zz
 
 
 class SAE(nn.Module):
@@ -126,6 +126,31 @@ class SAE(nn.Module):
                 self.codebooks.append(nn.Parameter(torch.randn(self.num_clusters[0], dim)))
 
 
+    # def _to_quantized(self, hots):
+    #     b, n, d = hots[0].shape[0], hots[0].shape[1], self.codebook_dim
+    #     results = []
+    #     for i, c in enumerate(self.num_clusters):
+    #         if i == 0:
+    #             encoded = hots[i] @ self.codebooks[i]
+    #         elif i == 1:
+    #             z = hots[0] @ self.codebooks[i]
+    #             z = rearrange(z, 'b n (c d) -> c (b n d)', c=c, d=d)
+    #             encoded = intermediate_op(hots[i], z, b, n, d)
+    #         else:
+    #             z = hots[0] @ self.codebooks[i]
+
+    #             for j in range(2, i+1):
+    #                 a = np.product(self.num_clusters[j:i+1])
+    #                 z = rearrange(z, 'b n (c a d) -> c (a b n d)', c=self.num_clusters[j-1], a=a, d=d)
+    #                 z = intermediate_op(hots[j-1], z, b, n, d, c=a)
+
+    #                 if a != c:
+    #                     z = rearrange(z, 'a (b n d) -> b n (a d)', b=b, n=n, d=d)
+
+    #             encoded = intermediate_op(hots[i], z, b, n, d)
+    #         results.append(encoded)
+    #     return results
+
     def _to_quantized(self, hots):
         b, n, d = hots[0].shape[0], hots[0].shape[1], self.codebook_dim
         results = []
@@ -134,20 +159,18 @@ class SAE(nn.Module):
                 encoded = hots[i] @ self.codebooks[i]
             elif i == 1:
                 z = hots[0] @ self.codebooks[i]
-                z = rearrange(z, 'b n (c d) -> c (b n d)', c=c, d=d)
-                encoded = intermediate_op(hots[i], z, b, n, d)
+                z = rearrange(z, 'b n (c d) -> b n c d', c=c, d=d)
+                encoded = torch.einsum('bncd,bnc->bnd', z, hots[i])
             else:
                 z = hots[0] @ self.codebooks[i]
 
                 for j in range(2, i+1):
                     a = np.product(self.num_clusters[j:i+1])
-                    z = rearrange(z, 'b n (c a d) -> c (a b n d)', c=self.num_clusters[j-1], a=a, d=d)
-                    z = intermediate_op(hots[j-1], z, b, n, d, c=a)
+                    z = rearrange(z, 'b n (c a d) -> b n c (a d)', c=self.num_clusters[j-1], a=a, d=d)
+                    z = torch.einsum('bncd,bnc->bnd', z, hots[j-1])
 
-                    if a != c:
-                        z = rearrange(z, 'a (b n d) -> b n (a d)', b=b, n=n, d=d)
-
-                encoded = intermediate_op(hots[i], z, b, n, d)
+                z = rearrange(z, 'b n (c d) -> b n c d', c=c, d=d)
+                encoded = torch.einsum('bncd,bnc->bnd', z, hots[i])
             results.append(encoded)
         return results
 

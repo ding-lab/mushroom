@@ -47,6 +47,11 @@ def get_interpolated_volume(stacked, section_positions, method='label_gaussian')
 
     return interp_volume
 
+def smoosh(*args):
+    new = ''
+    for a in args:
+        new += str(a)
+    return int(new)
 
 def relabel(labels):
     new = torch.zeros_like(labels, dtype=labels.dtype)
@@ -55,6 +60,11 @@ def relabel(labels):
         new[labels==ids[i]] = i
         
     return new
+
+def label_agg_clusters(clusters):
+    smooshed = np.vectorize(smoosh)(*clusters)
+    relabeled = relabel(torch.tensor(smooshed)).numpy()
+    return relabeled
 
 
 def aggregate_clusters(df, cluster_ids, n_clusters=10, distance_threshold=None):
@@ -110,3 +120,9 @@ def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8,
     
     return x
             
+
+# def mask_list(x, mask):
+#     """
+#     apply mask to non-maskable array
+#     """
+#     mask = 

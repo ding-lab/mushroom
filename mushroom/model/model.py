@@ -4,6 +4,7 @@ from typing import Any, Optional
 import warnings
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 
+import numpy as np
 import torch
 from einops import rearrange, repeat
 from torch.utils.data import DataLoader
@@ -13,6 +14,7 @@ from lightning.pytorch.callbacks import Callback
 
 from mushroom.model.sae import SAE, SAEargs
 from mushroom.visualization.utils import display_labeled_as_rgb
+import mushroom.utils as utils
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -24,7 +26,8 @@ class WandbImageCallback(Callback):
         self.logger = wandb_logger
         self.inference_dl = inference_dl
         self.learner_data = learner_data
-        self.channel = channel if channel is not None else self.learner_data.channels[0]
+        # self.channel = channel if channel is not None else self.learner_data.channels[0]
+        self.channel = 0
 
 
     def on_train_epoch_end(self, trainer, pl_module):
@@ -33,35 +36,41 @@ class WandbImageCallback(Callback):
         with torch.no_grad():
             for batch in self.inference_dl:
                 tiles, slides, dtypes = batch['tiles'], batch['slides'], batch['dtypes']
-                tiles, slides, dtypes = tiles.to(pl_module.device), slides.to(pl_module.device), dtypes.to(pl_module.device)
+                tiles = [x.to(pl_module.device) for x in tiles]
+                slides = [x.to(pl_module.device) for x in slides]
+                dtypes = [x.to(pl_module.device) for x in dtypes]
                 outs = pl_module.forward(tiles, slides, dtypes)
                 outputs.append(outs)
-    
-        formatted = pl_module.format_prediction_outputs(outputs)
-        predicted_pixels = formatted['predicted_pixels'].cpu().clone().detach().numpy()
-        true_pixels = formatted['true_pixels'].cpu().clone().detach().numpy()
-        clusters = formatted['clusters'].cpu().clone().detach().numpy().astype(int)
 
-        self.logger.log_image(
-            key=f'predicted pixels {self.channel}',
-            images=[img[self.learner_data.channels.index(self.channel)] for img in predicted_pixels],
-            caption=[str(i) for i in range(len(predicted_pixels))]
-        )
+        formatted = pl_module.format_prediction_outputs(outputs)
+        predicted_pixels = [[z.cpu().clone().detach().numpy() for z in x] for x in formatted['predicted_pixels']]
+        true_pixels = [x.cpu().clone().detach().numpy() for x in formatted['true_pixels']]
+        clusters = [x for x in formatted['clusters']]
+
+        for level, imgs in enumerate(predicted_pixels):
+            self.logger.log_image(
+                key=f'predicted pixels {level} {self.channel}',
+                images=[img[..., 0] for img in imgs],
+                caption=[str(i) for i in range(len(imgs))]
+            )
+        
         self.logger.log_image(
             key=f'true pixels {self.channel}',
-            images=[img[self.learner_data.channels.index(self.channel)] for img in true_pixels],
+            images=[img[..., 0] for img in true_pixels],
             caption=[str(i) for i in range(len(true_pixels))]
         )
-        self.logger.log_image(
-            key='predicted pixels first section',
-            images=[img for img in predicted_pixels[0]],
-            caption=self.learner_data.channels
-        )
-        self.logger.log_image(
-            key='clusters',
-            images=[display_labeled_as_rgb(labeled, preserve_indices=True) for labeled in clusters],
-            caption=[str(i) for i in range(len(clusters))]
-        )
+        # self.logger.log_image(
+        #     key='predicted pixels first section',
+        #     images=[img for img in predicted_pixels[0]],
+        #     caption=self.learner_data.channels
+        # )
+        for level, cs in enumerate(clusters):
+            # print([np.unique(c) for c in cs])
+            self.logger.log_image(
+                key=f'clusters {level}',
+                images=[display_labeled_as_rgb(labeled, preserve_indices=True) for labeled in cs],
+                caption=[str(i) for i in range(len(cs))]
+            )
 
 
 class LitMushroom(LightningModule):
@@ -102,6 +111,55 @@ class LitMushroom(LightningModule):
 
         self.outputs = None
 
+    def _flatten_outputs(self, outputs):
+        ds = self.learner_data.inference_ds
+        flat_dtypes = [ds.section_ids[sid][1] for sid, *_ in ds.idx_to_coord]
+        n_levels = len(outputs[0]['outputs']['level_to_encoded'])
+        batch_size = len(outputs[0]['outputs']['level_to_encoded'])
+        
+        flat = {}
+        for k in ['encoded_tokens_prequant']:
+            flat[k] = torch.concat([x['outputs'][k][:, 2:] for x in outputs])# skip slide and dtype token
+        
+        for k in ['level_to_encoded', 'cluster_probs', 'clusters']:
+            for level in range(n_levels):
+                flat[f'{k}_{level}'] = torch.concat([x['outputs'][k][level] for x in outputs])
+                
+        k = 'dtype_to_true_pixels'
+        pool = [v for v in flat_dtypes]
+        flat['true_pixels'] = []
+        spot = 0
+        for i, x in enumerate(outputs):
+            batch_size = len(x['outputs']['encoded_tokens_prequant'])
+            dtypes = pool[spot:spot + batch_size]
+            spot += batch_size
+
+            dtype_to_idx = {dtype:0 for dtype in sorted(set(dtypes))}
+            for dtype in dtypes:
+                idx = dtype_to_idx[dtype]
+                obj = x['outputs'][k][dtype][idx]
+                flat['true_pixels'].append(obj)
+                dtype_to_idx[dtype] += 1
+                    
+        k = 'dtype_to_pred_pixels' # refactor this
+        for level in range(n_levels):
+            pool = [v for v in flat_dtypes]
+            flat[f'pred_pixels_{level}'] = []
+            spot = 0
+            for i, x in enumerate(outputs):
+                batch_size = len(x['outputs']['encoded_tokens_prequant'])
+                dtypes = pool[spot:spot + batch_size]
+                spot += batch_size
+
+                dtype_to_idx = {dtype:0 for dtype in sorted(set(dtypes))}
+                for dtype in dtypes:
+                    idx = dtype_to_idx[dtype]
+                    obj = x['outputs'][k][dtype][level, idx]
+                    flat[f'pred_pixels_{level}'].append(obj)
+                    dtype_to_idx[dtype] += 1
+
+        return flat
+
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
@@ -118,88 +176,44 @@ class LitMushroom(LightningModule):
         return self.forward(tiles, slides, dtypes)
     
     def format_prediction_outputs(self, outputs):
-        n = len(self.learner_data.inference_ds)
-        num_patches = self.sae_args.size // self.sae_args.patch_size
+        ds = self.learner_data.inference_ds
+        n_levels = len(outputs[0]['outputs']['level_to_encoded'])
 
-        cluster_ids = torch.zeros(n, num_patches, num_patches)
-        cluster_probs = torch.zeros(n, num_patches, num_patches, self.sae_args.codebook_size)
-
-        dtype_to_pred_patches = {dtype: for dtype, n_channels in self.learner_data.dtype_to_n_channels.items()}
-        dtype_to_true_patches = {dtype:torch.zeros(n, n_channels, num_patches, num_patches) for dtype, n_channels in self.learner_data.dtype_to_n_channels.items()}
-
-        bs = outputs[0]['outputs']['clusters'].shape[0]
-
-        for i, output in enumerate(outputs):
-            dtype_to_pred_pixel_values = {dtype:rearrange(
-                pred_pixels, 'b (h w) c -> b c h w',
-                h=num_patches, w=num_patches,
-                c=self.learner_data.dtype_to_n_channels[dtype])
-                for dtype, pred_pixels in output['outputs']['dtype_to_pred_pixels'].items()}
-            dtype_to_true_pixel_values = {dtype:rearrange(
-                true_pixels, 'b (h w) c -> b c h w',
-                h=num_patches, w=num_patches,
-                c=self.learner_data.dtype_to_n_channels[dtype])
-                for dtype, true_pixels in output['outputs']['dtype_to_true_pixels'].items()}
-            clusters = rearrange(
-                output['outputs']['clusters'], 'b (h w) -> b h w',
-                h=num_patches, w=num_patches
-            )
-            probs = rearrange(
-                output['outputs']['cluster_probs'], 'b (h w) d -> b h w d',
-                h=num_patches, w=num_patches
-            )
-            start, stop = i * bs, (i * bs) + output['outputs']['clusters'].shape[0]
-            for dtype in dtype_to_pred_pixel_values.keys():
-                dtype_to_pred_patches[dtype][start:stop] = dtype_to_pred_pixel_values[dtype].cpu().detach()
-                true_patches[start:stop] = true_pixel_values.cpu().detach()
-            cluster_ids[start:stop] = clusters.cpu().detach()
-            cluster_probs[start:stop] = probs.cpu().detach()
-
-        predicted_pixels = torch.stack(
-            [self.learner_data.inference_ds.section_from_tiles(
-                pred_patches, i, size=(num_patches, num_patches)
-            ) for i in range(len(self.learner_data.inference_ds.section_ids))]
-        )
-        true_pixels = torch.stack(
-            [self.learner_data.inference_ds.section_from_tiles(
-                true_patches, i, size=(num_patches, num_patches)
-            ) for i in range(len(self.learner_data.inference_ds.section_ids))]
-        )
-        recon_cluster_ids = torch.stack(
-            [self.learner_data.inference_ds.section_from_tiles(
-                rearrange(cluster_ids, 'n h w -> n 1 h w'),
-                i, size=(num_patches, num_patches))
-                for i in range(len(self.learner_data.inference_ds.section_ids))] 
-        ).squeeze(1)
-        recon_cluster_probs = torch.stack(
-            [self.learner_data.inference_ds.section_from_tiles(
-                rearrange(cluster_probs, 'n h w c -> n c h w'),
-                i, size=(num_patches, num_patches))
-                for i in range(len(self.learner_data.inference_ds.section_ids))] 
-        )
+        flat = self._flatten_outputs(outputs)
+        clusters = [torch.stack(
+            [ds.section_from_tiles(
+                flat[f'clusters_{level}'].unsqueeze(-1), i
+            ).squeeze(-1) for i in range(len(ds.section_ids))]
+        ).to(torch.long) for level in range(n_levels)]
+        cluster_probs = [torch.stack(
+            [ds.section_from_tiles(
+                flat[f'cluster_probs_{level}'], i
+            ) for i in range(len(ds.section_ids))]
+        ) for level in range(n_levels)]
+        pred_pixels = [
+            [ds.section_from_tiles(
+                flat[f'pred_pixels_{level}'], i
+            ) for i in range(len(ds.section_ids))]
+        for level in range(n_levels)]
+        true_pixels = [ds.section_from_tiles(
+                flat['true_pixels'], i
+            ) for i in range(len(ds.section_ids))]
+        
+        relabeled_clusters = [utils.label_agg_clusters(clusters[:i + 1]) for i in range(len(clusters))]
 
         return {
-            'predicted_pixels': predicted_pixels,
-            'true_pixels': true_pixels,
-            'clusters': recon_cluster_ids,
-            'cluster_probs': recon_cluster_probs,
+            'predicted_pixels': pred_pixels, # nested list of (h, w, c), length num levels, length num sections
+            'true_pixels': true_pixels, # list of (h, w, c), length num sections
+            'clusters': relabeled_clusters, # list of (n, h, w), length num levels
+            'cluster_probs': cluster_probs, # list of (n, h, w, n_clusters), length num levels
+            'agg_clusters': clusters, # list of (n h w), length num levels
         }
-    
+
     def forward(self, tiles, slides, dtypes, pairs=None, is_anchor=None):
-        # if pos_x is not None:
-        #     x = torch.concat((anchor_x, pos_x))
-        #     slide = torch.concat((anchor_slide, pos_slide))
-        #     dtype = torch.concat((anchor_dtype, pos_dtype))
-        # else:
-        #     x = anchor_x
-        #     slide = anchor_slide
-        #     dtype = anchor_dtype
-
-        # pairs, is_anchor 
-        # your dataloader wont work due to different sizes
-
         losses, outputs = self.sae(tiles, slides, dtypes, pairs=pairs, is_anchor=is_anchor)
-        losses['loss'] = losses['overall_loss']
+
+        if 'overall_loss' in losses:
+            losses['loss'] = losses['overall_loss']
         losses['outputs'] = outputs
 
         return losses
