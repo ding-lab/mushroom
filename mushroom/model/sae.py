@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 import torch
@@ -49,18 +49,18 @@ def get_decoder(in_dim, decoder_dims, n_channels):
     ))
     return nn.Sequential(*blocks)
 
-# def intermediate_op(hots, z, b, n, d, c=None):
-#     if c is not None:
-#         zz = hots @ z
-#         zz = rearrange(zz, 'b1 n1 (c b2 n2 d) -> b1 b2 n1 n2 c d', c=c, b2=b, n2=n, d=d)
-#         zz = torch.diagonal(torch.diagonal(zz))
-#         zz = rearrange(zz, 'c d b n -> c (b n d)')
-#     else:
-#         zz = hots @ z
-#         zz = rearrange(zz, 'b1 n1 (b2 n2 d) -> b1 b2 n1 n2 d', b2=b, n2=n, d=d)
-#         zz = torch.diagonal(torch.diagonal(zz))
-#         zz = rearrange(zz, 'd b n -> b n d')
-#     return zz
+class VariableScaler(object):
+    def __init__(self, max_value, total_steps=1, min_value=0.):
+        self.values = np.linspace(min_value, max_value, total_steps)
+        self.idx = 0
+
+    def get_scaler(self):
+        if self.idx < len(self.values):
+            return self.values[self.idx]
+        return self.values[-1]
+
+    def step(self):
+        self.idx += 1
 
 
 class SAE(nn.Module):
@@ -76,12 +76,14 @@ class SAE(nn.Module):
         dtype_to_decoder_dims = {'multiplex': (256, 128, 64,), 'visium': (256, 512, 1024 * 2,), 'xenium': (256, 256, 256,)},
         recon_scaler = 1.,
         neigh_scaler = .1,
+        total_steps = 1,
     ):
         super().__init__()
         self.recon_scaler = recon_scaler
         self.neigh_scaler = neigh_scaler
         self.num_clusters = num_clusters
         self.codebook_dim = codebook_dim
+        self.variable_neigh_scaler = VariableScaler(neigh_scaler, total_steps=total_steps, min_value=0.)
 
         self.num_clusters = num_clusters
         self.dtypes = dtypes
@@ -124,32 +126,6 @@ class SAE(nn.Module):
                 total *= n
                 dim = codebook_dim * total
                 self.codebooks.append(nn.Parameter(torch.randn(self.num_clusters[0], dim)))
-
-
-    # def _to_quantized(self, hots):
-    #     b, n, d = hots[0].shape[0], hots[0].shape[1], self.codebook_dim
-    #     results = []
-    #     for i, c in enumerate(self.num_clusters):
-    #         if i == 0:
-    #             encoded = hots[i] @ self.codebooks[i]
-    #         elif i == 1:
-    #             z = hots[0] @ self.codebooks[i]
-    #             z = rearrange(z, 'b n (c d) -> c (b n d)', c=c, d=d)
-    #             encoded = intermediate_op(hots[i], z, b, n, d)
-    #         else:
-    #             z = hots[0] @ self.codebooks[i]
-
-    #             for j in range(2, i+1):
-    #                 a = np.product(self.num_clusters[j:i+1])
-    #                 z = rearrange(z, 'b n (c a d) -> c (a b n d)', c=self.num_clusters[j-1], a=a, d=d)
-    #                 z = intermediate_op(hots[j-1], z, b, n, d, c=a)
-
-    #                 if a != c:
-    #                     z = rearrange(z, 'a (b n d) -> b n (a d)', b=b, n=n, d=d)
-
-    #             encoded = intermediate_op(hots[i], z, b, n, d)
-    #         results.append(encoded)
-    #     return results
 
     def _to_quantized(self, hots):
         b, n, d = hots[0].shape[0], hots[0].shape[1], self.codebook_dim
@@ -315,6 +291,8 @@ class SAE(nn.Module):
             # count all dtypes the same for now
             losses = {}
             neigh_total, recon_total = 0, 0
+            neigh_scaler = self.variable_neigh_scaler.get_scaler()
+            self.variable_neigh_scaler.step()
             for level in range(len(level_to_clusters)):
                 losses[f'neigh_loss_level_{level}'] = dtype_to_neigh_loss[f'{level}']
                 neigh_total += dtype_to_neigh_loss[f'{level}']
@@ -324,7 +302,7 @@ class SAE(nn.Module):
             losses['recon_loss'] = recon_total
             losses['neigh_loss'] = neigh_total
 
-            overall = recon_total * self.recon_scaler + neigh_total * self.neigh_scaler
+            overall = recon_total * self.recon_scaler + neigh_total * neigh_scaler
             losses['overall_loss'] = overall
         else:
             losses = {}

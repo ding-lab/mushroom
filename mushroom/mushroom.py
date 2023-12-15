@@ -72,6 +72,7 @@ class Mushroom(object):
             self.sae_args,
             self.learner_data,
             lr=self.trainer_kwargs['lr'],
+            total_steps=self.trainer_kwargs['max_epochs'] * self.trainer_kwargs['steps_per_epoch'],
         )
 
         logging.info('model initialized')
@@ -166,43 +167,62 @@ class Mushroom(object):
         self.agg_clusters = [x.cpu().clone().detach().numpy().astype(int) for x in formatted['agg_clusters']]
         self.cluster_probs = [x.cpu().clone().detach().numpy() for x in formatted['cluster_probs']]
 
-        # scalers = [np.amax(x, axis=(-2, -1)) for x in self.predicted_pixels]
-        # self.scaled_predicted_pixels = [xp / rearrange(xs, 'c -> c 1 1') for xp, xs in zip(self.predicted_pixels, scalers)]
+    def get_cluster_intensities(self, use_predicted=True, level=-1):
+        dtype_to_df = {}
+        imgs = self.predicted_pixels[level] if use_predicted else self.true_pixels
+        for dtype in self.dtypes:
+            sections, clusters = [], []
+            for (sid, dt), img, labeled in zip(self.section_ids, imgs, self.clusters[level]):
+                if dt == dtype:
+                    sections.append(img)
+                    clusters.append(labeled)
+            sections = np.stack(sections) # (n, h, w, c)
+            clusters = np.stack(clusters) # (n, h, w)
 
-        # scalers = np.amax(self.true_pixels, axis=(-2, -1))
-        # self.scaled_true_pixels = self.true_pixels / rearrange(scalers, 'n c -> n c 1 1')
+            data = []
+            for cluster in np.unique(clusters):
+                mask = clusters==cluster
+                data.append(sections[mask, :].mean(axis=0))
+            df = pd.DataFrame(data=data, columns=self.learner_data.dtype_to_channels[dtype], index=np.unique(clusters))
+            dtype_to_df[dtype] = df
+        return dtype_to_df
 
-    def get_cluster_intensities(self):
-        data = []
-        x = rearrange(self.scaled_predicted_pixels, 'n c h w -> n h w c')
-        for cluster in np.unique(self.clusters):
-            mask = self.clusters==cluster
-            data.append(x[mask, :].mean(axis=0))
-        df = pd.DataFrame(data=data, columns=self.learner_data.channels, index=np.unique(self.clusters))
-        return df
 
-    def generate_interpolated_volume(self, z_scaler=.1):
-        section_positions = [entry['position'] for entry in self.sections
-                             if entry['data'][0]['dtype']=='multiplex']
+    def generate_interpolated_volume(self, z_scaler=.1, level=-1):
+        section_positions = [entry['position'] for entry in self.sections]
         section_positions = (np.asarray(section_positions) * z_scaler).astype(int)
-        cluster_volume = utils.get_interpolated_volume(self.clusters, section_positions)
+        for i, val in enumerate(section_positions):
+            if i > 0:
+                old = section_positions[i-1]
+                if old == val:
+                    section_positions[i:] = section_positions[i:] + 1
+    
+        cluster_volume = utils.get_interpolated_volume(self.clusters[level], section_positions)
         return cluster_volume
 
-    def display_predicted_pixels(self, channel=None, figsize=None):
+    def display_predicted_pixels(self, channel, dtype, level=-1, figsize=None):
         if self.predicted_pixels is None:
             raise RuntimeError(
                 'Must train model and embed sections before displaying. To embed run .embed_sections()')
-        channel = channel if channel is not None else self.learner_data.channels[0]
-        fig, axs = plt.subplots(nrows=2, ncols=self.predicted_pixels.shape[0], figsize=figsize)
+        pred, true, sids = [], [], []
+        for (sid, dt), pred_imgs, true_imgs in zip(self.section_ids, self.predicted_pixels[level], self.true_pixels):
+            if dt == dtype:
+                pred.append(pred_imgs)
+                true.append(true_imgs)
+                sids.append(sid)
+        pred = np.stack(pred) # (n, h, w, c)
+        true = np.stack(true) # (n, h, w, c)
 
-        for sid, img, ax in zip(self.section_ids, self.predicted_pixels, axs[0, :]):
-            ax.imshow(img[self.learner_data.channels.index(channel)])
+        fig, axs = plt.subplots(nrows=2, ncols=pred.shape[0], figsize=figsize)
+
+        for sid, img, ax in zip(sids, pred, axs[0, :]):
+            ax.imshow(img[..., self.learner_data.dtype_to_channels[dtype].index(channel)])
             ax.set_xticks([])
             ax.set_yticks([])
             ax.set_title(sid)
 
-        for sid, img, ax in zip(self.section_ids, self.true_imgs, axs[1, :]):
-            ax.imshow(img[self.learner_data.channels.index(channel)])
+        for sid, img, ax in zip(sids, true, axs[1, :]):
+            ax.imshow(img[..., self.learner_data.dtype_to_channels[dtype].index(channel)])
             ax.set_xticks([])
             ax.set_yticks([])
         axs[0, 0].set_ylabel('predicted')
@@ -210,20 +230,21 @@ class Mushroom(object):
 
         return axs
     
-    def display_cluster_probs(self):
+    def display_cluster_probs(self, level=-1):
+        cluster_probs = self.cluster_probs[level]
         fig, axs = plt.subplots(
-            nrows=self.cluster_probs.shape[1],
-            ncols=self.cluster_probs.shape[0],
-            figsize=(self.cluster_probs.shape[0], self.cluster_probs.shape[1])
+            nrows=cluster_probs.shape[-1],
+            ncols=cluster_probs.shape[0],
+            figsize=(cluster_probs.shape[0], cluster_probs.shape[-1])
         )
-        for c in range(self.cluster_probs.shape[0]):
-            for r in range(self.cluster_probs.shape[1]):
+        for c in range(cluster_probs.shape[0]):
+            for r in range(cluster_probs.shape[-1]):
                 ax = axs[r, c]
-                ax.imshow(self.cluster_probs[c, r])
+                ax.imshow(cluster_probs[c, ..., r])
                 ax.set_yticks([])
                 ax.set_xticks([])
                 if c == 0: ax.set_ylabel(r, rotation=90)
 
-    def display_clusters(self, cmap=None, figsize=None, horizontal=True, preserve_indices=False):
+    def display_clusters(self, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True):
         vis_utils.display_clusters(
-            self.clusters, cmap=None, figsize=None, horizontal=True, preserve_indices=False)
+            self.clusters[level], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices)

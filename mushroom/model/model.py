@@ -59,11 +59,6 @@ class WandbImageCallback(Callback):
             images=[img[..., 0] for img in true_pixels],
             caption=[str(i) for i in range(len(true_pixels))]
         )
-        # self.logger.log_image(
-        #     key='predicted pixels first section',
-        #     images=[img for img in predicted_pixels[0]],
-        #     caption=self.learner_data.channels
-        # )
         for level, cs in enumerate(clusters):
             # print([np.unique(c) for c in cs])
             self.logger.log_image(
@@ -79,6 +74,7 @@ class LitMushroom(LightningModule):
             sae_args,
             learner_data,
             lr=1e-4,
+            total_steps=1,
             ):
         super().__init__()
         self.image_size = sae_args.size
@@ -106,7 +102,8 @@ class LitMushroom(LightningModule):
             codebook_dim=self.sae_args.codebook_dim,
             dtype_to_decoder_dims=self.sae_args.dtype_to_decoder_dims,
             recon_scaler=sae_args.recon_scaler,
-            neigh_scaler=sae_args.neigh_scaler
+            neigh_scaler=sae_args.neigh_scaler,
+            total_steps=total_steps
         )
 
         self.outputs = None
@@ -168,6 +165,7 @@ class LitMushroom(LightningModule):
         tiles, slides, dtypes = batch['tiles'], batch['slides'], batch['dtypes']
         pairs, is_anchor = batch['pairs'], batch['is_anchor']
         outs = self.forward(tiles, slides, dtypes, pairs=pairs, is_anchor=is_anchor)
+        outs['neigh_scaler'] = self.sae.variable_neigh_scaler.get_scaler()
         self.log_dict({k:v for k, v in outs.items() if k!='outputs'}, on_step=True, on_epoch=False, prog_bar=True)
         return outs
     
