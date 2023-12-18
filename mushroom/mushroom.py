@@ -105,6 +105,7 @@ class Mushroom(object):
         chkpt_callback = ModelCheckpoint(
             dirpath=self.trainer_kwargs['save_dir'],
             save_last=True,
+            save_top_k=-1,
             every_n_epochs=self.trainer_kwargs['save_every'],
         )
         callbacks.append(chkpt_callback)

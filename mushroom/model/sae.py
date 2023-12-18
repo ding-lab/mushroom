@@ -50,7 +50,7 @@ def get_decoder(in_dim, decoder_dims, n_channels):
     return nn.Sequential(*blocks)
 
 class VariableScaler(object):
-    def __init__(self, max_value, total_steps=1, min_value=0.):
+    def __init__(self, max_value, total_steps=1, min_value=0.0):
         self.values = np.linspace(min_value, max_value, total_steps)
         self.idx = 0
 
