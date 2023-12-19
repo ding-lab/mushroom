@@ -12,7 +12,7 @@ from vit_pytorch import ViT
 from lightning.pytorch import LightningModule
 from lightning.pytorch.callbacks import Callback
 
-from mushroom.model.sae import SAE, SAEargs
+from mushroom.model.sae import SAE, SAEargs, VariableScaler
 from mushroom.visualization.utils import display_labeled_as_rgb
 import mushroom.utils as utils
 
@@ -67,6 +67,33 @@ class WandbImageCallback(Callback):
                 caption=[str(i) for i in range(len(cs))]
             )
 
+class VariableTrainingCallback(Callback):
+    def __init__(self, freeze_at=[2, 4, 6]):
+        self.freeze_at = freeze_at
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        for level, epoch in enumerate(self.freeze_at):
+            if epoch == pl_module.current_epoch:
+                print(f'freezing level {level}')
+                pl_module.sae.freeze_cluster_level(level)
+
+
+
+# class VariableTrainingCallback(Callback):
+#     def __init__(self, recon_scaler, neigh_scaler, pct=.5):
+#         self.recon_scaler = recon_scaler
+#         self.neigh_scaler = neigh_scaler
+#         self.pct = pct
+
+#     def on_train_epoch_end(self, trainer, pl_module):
+#         pass
+#         # val = pl_module.current_epoch / trainer.max_epochs
+#         # print(val, self.pct)
+#         # if self.pct < val and pl_module.sae.recon_scaler > 0.:
+#         #     pl_module.sae.freeze_all_except_codebooks()
+#         #     pl_module.sae.recon_scaler = 0.
+#         #     pl_module.sae.variable_neigh_scaler = VariableScaler(self.neigh_scaler, total_steps=100000,)
+
 
 class LitMushroom(LightningModule):
     def __init__(
@@ -101,8 +128,10 @@ class LitMushroom(LightningModule):
             dtype_to_n_channels=self.learner_data.dtype_to_n_channels,
             codebook_dim=self.sae_args.codebook_dim,
             dtype_to_decoder_dims=self.sae_args.dtype_to_decoder_dims,
+            num_clusters=self.sae_args.num_clusters,
             recon_scaler=sae_args.recon_scaler,
             neigh_scaler=sae_args.neigh_scaler,
+            level_scalers=sae_args.level_scalers,
             total_steps=total_steps
         )
 
@@ -166,6 +195,7 @@ class LitMushroom(LightningModule):
         pairs, is_anchor = batch['pairs'], batch['is_anchor']
         outs = self.forward(tiles, slides, dtypes, pairs=pairs, is_anchor=is_anchor)
         outs['neigh_scaler'] = self.sae.variable_neigh_scaler.get_scaler()
+        outs['recon_scaler'] = self.sae.recon_scaler
         self.log_dict({f'{k}_step':v for k, v in outs.items() if k!='outputs'}, on_step=True, on_epoch=False, prog_bar=True)
         self.log_dict({f'{k}_epoch':v for k, v in outs.items() if k!='outputs'}, on_step=False, on_epoch=True, prog_bar=True)
         return outs

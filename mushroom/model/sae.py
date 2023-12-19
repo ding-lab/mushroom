@@ -8,6 +8,7 @@ from torch import nn
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from einops import repeat, rearrange
+from scipy.interpolate import interp1d
 from vector_quantize_pytorch import VectorQuantize
 
 
@@ -25,6 +26,7 @@ class SAEargs:
     num_clusters: Iterable = (8, 4, 2,)
     recon_scaler: float = 1.
     neigh_scaler: float = 1.
+    level_scalers: Iterable = (.8, .4, .2,)
 
 
 
@@ -50,8 +52,20 @@ def get_decoder(in_dim, decoder_dims, n_channels):
     return nn.Sequential(*blocks)
 
 class VariableScaler(object):
-    def __init__(self, max_value, total_steps=1, min_value=0.0):
-        self.values = np.linspace(min_value, max_value, total_steps)
+    def __init__(self, max_value, total_steps=1, min_value=0.0, function='log'):
+
+        if function == 'linear':
+            self.values = np.linspace(min_value, max_value, total_steps)
+        elif function == 'log':
+            x = np.linspace(0, 50, total_steps)
+            x = np.log1p(x + 1)
+            self.values = interp1d([x.min(), x.max()],[min_value, max_value])(x)
+        elif function == 'ramp_up':
+            self.values = np.linspace(min_value, max_value, total_steps // 2)
+            self.values = np.concatenate([self.values, np.full((total_steps // 2 + 1,), max_value)])
+        elif function == 'constant':
+            self.values = np.full((total_steps,), max_value)
+
         self.idx = 0
 
     def get_scaler(self):
@@ -76,16 +90,19 @@ class SAE(nn.Module):
         dtype_to_decoder_dims = {'multiplex': (256, 128, 64,), 'visium': (256, 512, 1024 * 2,), 'xenium': (256, 256, 256,)},
         recon_scaler = 1.,
         neigh_scaler = .1,
+        level_scalers = (1., 1., 1.,),
         total_steps = 1,
     ):
         super().__init__()
         self.recon_scaler = recon_scaler
+        # self.neigh_scaler = 0.
         self.neigh_scaler = neigh_scaler
-        self.num_clusters = num_clusters
-        self.codebook_dim = codebook_dim
-        self.variable_neigh_scaler = VariableScaler(neigh_scaler, total_steps=total_steps, min_value=0.)
+        self.variable_neigh_scaler = VariableScaler(self.neigh_scaler, total_steps=total_steps, min_value=0.)
 
         self.num_clusters = num_clusters
+        self.codebook_dim = codebook_dim
+        self.level_scalers = level_scalers
+
         self.dtypes = dtypes
         self.encoder = encoder
         self.num_patches, self.encoder_dim = encoder.pos_embedding.shape[-2:]
@@ -149,7 +166,35 @@ class SAE(nn.Module):
                 encoded = torch.einsum('bncd,bnc->bnd', z, hots[i])
             results.append(encoded)
         return results
+    
+    def freeze_all_except_codebooks(self):
+        modules = [
+            self.encoder,
+            self.dtype_to_patch,
+            self.dtype_to_decoder,
+            self.level_to_logits
 
+        ]
+        for module in modules:
+            for param in module.parameters():
+                param.requires_grad = False
+        
+        params = [
+            self.slide_embedding,
+            self.dtype_embedding
+        ]
+        for param in params:
+                param.requires_grad = False
+
+    def freeze_cluster_level(self, level):
+        modules = [
+            self.level_to_logits[level],
+        ]
+        for module in modules:
+            for param in module.parameters():
+                param.requires_grad = False
+
+        self.codebooks[level].requires_grad = False
        
     def encode(self, imgs, slides, dtypes):
         patches = []
@@ -205,7 +250,7 @@ class SAE(nn.Module):
         level_to_encoded = self._to_quantized(level_to_hots)
         level_to_encoded = torch.stack(level_to_encoded)
 
-        return level_to_encoded, [probs.argmax(dim=-1) for probs in level_to_probs], level_to_probs
+        return level_to_encoded, level_to_hots, [probs.argmax(dim=-1) for probs in level_to_probs], level_to_probs
     
     def decode(self, level_to_encoded, slide, dtype):
         slide_embs = self.slide_embedding(slide) # b d
@@ -234,7 +279,7 @@ class SAE(nn.Module):
 
         encoded_tokens_prequant  = self.encode(imgs, slides, dtypes)
 
-        level_to_encoded, level_to_clusters, level_to_probs = self.quantize(encoded_tokens_prequant)
+        level_to_encoded, level_to_hots, level_to_clusters, level_to_probs = self.quantize(encoded_tokens_prequant)
 
         flat_slides = torch.concat(slides, dim=0)
         flat_dtypes = torch.concat(dtypes, dim=0)
@@ -267,25 +312,38 @@ class SAE(nn.Module):
 
             flat_pairs = torch.concat(pairs, dim=0)
             flat_is_anchor = torch.concat(is_anchor, dim=0)
-            dtype_to_neigh_loss = {}
-            for level, (clusters, probs) in enumerate(zip(level_to_clusters, level_to_probs)):
+            level_to_neigh_loss = []
+            level_to_frac_loss = []
+            for level, (clusters, probs, hots) in enumerate(zip(level_to_clusters, level_to_probs, level_to_hots)):
 
                 anchor_mask = flat_is_anchor
                 pos_mask = ~flat_is_anchor
 
-                anchor_clusters, anchor_probs = clusters[anchor_mask], probs[anchor_mask]
+                anchor_clusters, anchor_probs, anchor_hots = clusters[anchor_mask], probs[anchor_mask], hots[anchor_mask]
                 anchor_order = torch.argsort(flat_pairs[anchor_mask])
-                pos_clusters, pos_probs = clusters[pos_mask], probs[pos_mask]
+                pos_clusters, pos_probs, pos_hots = clusters[pos_mask], probs[pos_mask], hots[pos_mask]
                 pos_order = torch.argsort(flat_pairs[pos_mask])
 
                 anchor_clusters, pos_clusters = anchor_clusters[anchor_order], pos_clusters[pos_order]
                 anchor_probs, pos_probs = anchor_probs[anchor_order], pos_probs[pos_order]
+                anchor_hots, pos_hots = anchor_hots[anchor_order], pos_hots[pos_order]
+
+                # anchor_sums, pos_sums = anchor_hots.sum(1), pos_hots.sum(1)
+                # anchor_sums /= anchor_sums.sum(-1).unsqueeze(-1)
+                # pos_sums /= pos_sums.sum(-1).unsqueeze(-1)
+                # # level_to_frac_loss.append(F.mse_loss(anchor_sums, pos_sums))
+                # level_to_neigh_loss.append(F.mse_loss(anchor_sums, pos_sums))
+
+
+                # level_to_neigh_loss.append(F.cross_entropy(anchor_hots, pos_hots))
+
+                # level_to_neigh_loss.append(F.cross_entropy(anchor_probs, pos_probs))
 
                 token_idxs = torch.randint(anchor_probs.shape[1], (anchor_probs.shape[0],))
 
                 pred = anchor_probs[torch.arange(anchor_probs.shape[0]), token_idxs]
                 target = pos_clusters[torch.arange(pos_clusters.shape[0]), token_idxs]
-                dtype_to_neigh_loss[f'{level}'] = F.cross_entropy(pred, target)
+                level_to_neigh_loss.append(F.cross_entropy(pred, target))
 
 
             # count all dtypes the same for now
@@ -293,12 +351,12 @@ class SAE(nn.Module):
             neigh_total, recon_total = 0, 0
             neigh_scaler = self.variable_neigh_scaler.get_scaler()
             self.variable_neigh_scaler.step()
-            for level in range(len(level_to_clusters)):
-                losses[f'neigh_loss_level_{level}'] = dtype_to_neigh_loss[f'{level}']
-                neigh_total += dtype_to_neigh_loss[f'{level}']
+            for level, scaler in enumerate(self.level_scalers):
+                losses[f'neigh_loss_level_{level}'] = level_to_neigh_loss[level]
+                neigh_total += level_to_neigh_loss[level] * scaler
                 for name in self.dtypes:
                     losses[f'recon_loss_{level}_{name}'] = dtype_to_recon_loss[f'{level}_{name}']
-                    recon_total += dtype_to_recon_loss[f'{level}_{name}']
+                    recon_total += dtype_to_recon_loss[f'{level}_{name}'] * scaler
             losses['recon_loss'] = recon_total
             losses['neigh_loss'] = neigh_total
 

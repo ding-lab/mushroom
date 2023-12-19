@@ -22,7 +22,7 @@ import mushroom.data.xenium as xenium
 import mushroom.data.visium as visium
 import mushroom.visualization.utils as vis_utils
 from mushroom.model.sae import SAEargs
-from mushroom.model.model import LitMushroom, WandbImageCallback
+from mushroom.model.model import LitMushroom, WandbImageCallback, VariableTrainingCallback
 from mushroom.data.datasets import get_learner_data, construct_training_batch, construct_inference_batch
 import mushroom.utils as utils
 
@@ -105,10 +105,13 @@ class Mushroom(object):
         chkpt_callback = ModelCheckpoint(
             dirpath=self.trainer_kwargs['save_dir'],
             save_last=True,
-            save_top_k=-1,
+            # save_top_k=-1,
             every_n_epochs=self.trainer_kwargs['save_every'],
         )
         callbacks.append(chkpt_callback)
+
+        vt_callback = VariableTrainingCallback(freeze_at=[2, 4, 6])
+        callbacks.append(vt_callback)
 
         self.trainer = self.initialize_trainer(logger, callbacks)
             
