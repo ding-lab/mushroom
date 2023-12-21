@@ -68,14 +68,19 @@ class WandbImageCallback(Callback):
             )
 
 class VariableTrainingCallback(Callback):
-    def __init__(self, freeze_at=[2, 4, 6]):
+    def __init__(self, freeze_at=[2, 8], level_scalers=[1., 1., 1.]):
         self.freeze_at = freeze_at
+        self.level_scalers = level_scalers
 
     def on_train_epoch_end(self, trainer, pl_module):
         for level, epoch in enumerate(self.freeze_at):
             if epoch == pl_module.current_epoch:
                 print(f'freezing level {level}')
                 pl_module.sae.freeze_cluster_level(level)
+                scalers = [x if level + 1 == lev else 0.
+                           for lev, x in enumerate(self.level_scalers)]
+                print('adjusting scalers', scalers)
+                pl_module.sae.level_scalers = scalers
 
 
 
@@ -144,8 +149,8 @@ class LitMushroom(LightningModule):
         batch_size = len(outputs[0]['outputs']['level_to_encoded'])
         
         flat = {}
-        for k in ['encoded_tokens_prequant']:
-            flat[k] = torch.concat([x['outputs'][k][:, 2:] for x in outputs])# skip slide and dtype token
+        # for k in ['encoded_tokens_prequant']:
+        #     flat[k] = torch.concat([x['outputs'][k][:, 2:] for x in outputs])# skip slide and dtype token
         
         for k in ['level_to_encoded', 'cluster_probs', 'clusters']:
             for level in range(n_levels):
@@ -156,7 +161,7 @@ class LitMushroom(LightningModule):
         flat['true_pixels'] = []
         spot = 0
         for i, x in enumerate(outputs):
-            batch_size = len(x['outputs']['encoded_tokens_prequant'])
+            batch_size = len(x['outputs']['clusters'][0])
             dtypes = pool[spot:spot + batch_size]
             spot += batch_size
 
@@ -173,7 +178,7 @@ class LitMushroom(LightningModule):
             flat[f'pred_pixels_{level}'] = []
             spot = 0
             for i, x in enumerate(outputs):
-                batch_size = len(x['outputs']['encoded_tokens_prequant'])
+                batch_size = len(x['outputs']['clusters'][0])
                 dtypes = pool[spot:spot + batch_size]
                 spot += batch_size
 
@@ -195,9 +200,14 @@ class LitMushroom(LightningModule):
         pairs, is_anchor = batch['pairs'], batch['is_anchor']
         outs = self.forward(tiles, slides, dtypes, pairs=pairs, is_anchor=is_anchor)
         outs['neigh_scaler'] = self.sae.variable_neigh_scaler.get_scaler()
+        # outs['neigh_scaler'] = self.sae.neigh_scaler
         outs['recon_scaler'] = self.sae.recon_scaler
-        self.log_dict({f'{k}_step':v for k, v in outs.items() if k!='outputs'}, on_step=True, on_epoch=False, prog_bar=True)
-        self.log_dict({f'{k}_epoch':v for k, v in outs.items() if k!='outputs'}, on_step=False, on_epoch=True, prog_bar=True)
+        for level, x in enumerate(self.sae.level_scalers):
+            outs[f'level_scaler_{level}'] = x
+
+        order = sorted([k for k in outs.keys() if k!='outputs'])
+        self.log_dict({f'{k}_step':outs[k] for k in order}, on_step=True, on_epoch=False, prog_bar=True)
+        self.log_dict({f'{k}_epoch':outs[k] for k in order}, on_step=False, on_epoch=True, prog_bar=True)
         return outs
     
     def predict_step(self, batch):
