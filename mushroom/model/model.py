@@ -68,11 +68,12 @@ class WandbImageCallback(Callback):
             )
 
 class VariableTrainingCallback(Callback):
-    def __init__(self, freeze_at=[2, 8], level_scalers=[1., 1., 1.]):
+    def __init__(self, freeze_at=[0,10], level_scalers=[1., 1., 1.]):
         self.freeze_at = freeze_at
         self.level_scalers = level_scalers
 
     def on_train_epoch_end(self, trainer, pl_module):
+        # pass
         for level, epoch in enumerate(self.freeze_at):
             if epoch == pl_module.current_epoch:
                 print(f'freezing level {level}')

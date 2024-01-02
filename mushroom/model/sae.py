@@ -53,7 +53,7 @@ def get_decoder(in_dim, decoder_dims, n_channels):
     return nn.Sequential(*blocks)
 
 class VariableScaler(object):
-    def __init__(self, max_value, total_steps=1, min_value=0.0, function='log'):
+    def __init__(self, max_value, total_steps=1, min_value=0.0, function='linear'):
 
         if function == 'linear':
             self.values = np.linspace(min_value, max_value, total_steps)
@@ -366,7 +366,7 @@ class SAE(nn.Module):
             neigh_scaler = self.variable_neigh_scaler.get_scaler()
             self.variable_neigh_scaler.step()
             dtype_to_scaler = {
-                'multiplex': 2.,
+                'multiplex': 1.,
                 'xenium': 1.
             }
             for level, scaler in enumerate(self.level_scalers):

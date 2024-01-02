@@ -110,7 +110,7 @@ class Mushroom(object):
         )
         callbacks.append(chkpt_callback)
 
-        vt_callback = VariableTrainingCallback()
+        vt_callback = VariableTrainingCallback(freeze_at=self.trainer_kwargs['freeze_at'], level_scalers=self.sae_kwargs['level_scalers'])
         callbacks.append(vt_callback)
 
         self.trainer = self.initialize_trainer(logger, callbacks)
