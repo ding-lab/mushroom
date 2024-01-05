@@ -110,7 +110,7 @@ class Mushroom(object):
         )
         callbacks.append(chkpt_callback)
 
-        vt_callback = VariableTrainingCallback(freeze_at=[2, 4, 6])
+        vt_callback = VariableTrainingCallback(pretrain_for=1)
         callbacks.append(vt_callback)
 
         self.trainer = self.initialize_trainer(logger, callbacks)
@@ -234,8 +234,9 @@ class Mushroom(object):
 
         return axs
     
-    def display_cluster_probs(self, level=-1):
-        cluster_probs = self.cluster_probs[level]
+    def display_cluster_probs(self, level=-1, cluster_probs=None):
+        if cluster_probs is None:
+            cluster_probs = self.cluster_probs[level]
         fig, axs = plt.subplots(
             nrows=cluster_probs.shape[-1],
             ncols=cluster_probs.shape[0],
@@ -249,6 +250,8 @@ class Mushroom(object):
                 ax.set_xticks([])
                 if c == 0: ax.set_ylabel(r, rotation=90)
 
-    def display_clusters(self, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True):
+    def display_clusters(self, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True, clusters=None):
+        if clusters is None:
+            clusters = self.clusters[level]
         vis_utils.display_clusters(
-            self.clusters[level], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices)
+            clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices)

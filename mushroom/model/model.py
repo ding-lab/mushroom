@@ -68,14 +68,14 @@ class WandbImageCallback(Callback):
             )
 
 class VariableTrainingCallback(Callback):
-    def __init__(self, freeze_at=[2, 4, 6]):
-        self.freeze_at = freeze_at
+    def __init__(self, pretrain_for=2):
+        self.pretrain_for = pretrain_for
 
     def on_train_epoch_end(self, trainer, pl_module):
-        for level, epoch in enumerate(self.freeze_at):
-            if epoch == pl_module.current_epoch:
-                print(f'freezing level {level}')
-                pl_module.sae.freeze_cluster_level(level)
+        if self.pretrain_for == pl_module.current_epoch:
+            pass
+            # print(f'stoppint pretraining level {self.pretrain_for}')
+            # pl_module.sae.end_pretraining()
 
 
 
@@ -194,7 +194,8 @@ class LitMushroom(LightningModule):
         tiles, slides, dtypes = batch['tiles'], batch['slides'], batch['dtypes']
         pairs, is_anchor = batch['pairs'], batch['is_anchor']
         outs = self.forward(tiles, slides, dtypes, pairs=pairs, is_anchor=is_anchor)
-        outs['neigh_scaler'] = self.sae.variable_neigh_scaler.get_scaler()
+        # outs['neigh_scaler'] = self.sae.variable_neigh_scaler.get_scaler()
+        outs['neigh_scaler'] = self.sae.neigh_scaler_value
         outs['recon_scaler'] = self.sae.recon_scaler
         self.log_dict({f'{k}_step':v for k, v in outs.items() if k!='outputs'}, on_step=True, on_epoch=False, prog_bar=True)
         self.log_dict({f'{k}_epoch':v for k, v in outs.items() if k!='outputs'}, on_step=False, on_epoch=True, prog_bar=True)

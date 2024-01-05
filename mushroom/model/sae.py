@@ -94,10 +94,12 @@ class SAE(nn.Module):
         total_steps = 1,
     ):
         super().__init__()
+        self.is_pretraining = True
         self.recon_scaler = recon_scaler
         # self.neigh_scaler = 0.
         self.neigh_scaler = neigh_scaler
-        self.variable_neigh_scaler = VariableScaler(self.neigh_scaler, total_steps=total_steps, min_value=0.)
+        self.neigh_scaler_value = 0.
+        # self.variable_neigh_scaler = VariableScaler(self.neigh_scaler, total_steps=total_steps, min_value=0.)
 
         self.num_clusters = num_clusters
         self.codebook_dim = codebook_dim
@@ -144,6 +146,17 @@ class SAE(nn.Module):
                 dim = codebook_dim * total
                 self.codebooks.append(nn.Parameter(torch.randn(self.num_clusters[0], dim)))
 
+        self.level_to_final_logits = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(np.sum(self.num_clusters[:i + 1]) + self.encoder_dim, self.encoder_dim),
+                nn.ReLU(),
+                nn.Linear(self.encoder_dim, self.encoder_dim),
+                nn.ReLU(),
+                nn.Linear(self.encoder_dim, np.product(self.num_clusters[:i + 1])),
+            ) for i in range(len(self.num_clusters))
+        ])
+        self.final_codebooks = torch.nn.ParameterList([nn.Parameter(torch.randn(np.product(self.num_clusters[:i + 1]), codebook_dim)) for i in range(len(self.num_clusters))])
+
     def _to_quantized(self, hots):
         b, n, d = hots[0].shape[0], hots[0].shape[1], self.codebook_dim
         results = []
@@ -166,14 +179,14 @@ class SAE(nn.Module):
                 encoded = torch.einsum('bncd,bnc->bnd', z, hots[i])
             results.append(encoded)
         return results
-    
-    def freeze_all_except_codebooks(self):
+
+    def end_pretraining(self):
         modules = [
             self.encoder,
             self.dtype_to_patch,
             self.dtype_to_decoder,
-            self.level_to_logits
-
+            self.level_to_logits,
+            self.codebooks
         ]
         for module in modules:
             for param in module.parameters():
@@ -186,15 +199,8 @@ class SAE(nn.Module):
         for param in params:
                 param.requires_grad = False
 
-    def freeze_cluster_level(self, level):
-        modules = [
-            self.level_to_logits[level],
-        ]
-        for module in modules:
-            for param in module.parameters():
-                param.requires_grad = False
-
-        self.codebooks[level].requires_grad = False
+        self.is_pretraining = False
+        self.neigh_scaler_value = self.neigh_scaler
        
     def encode(self, imgs, slides, dtypes):
         patches = []
@@ -234,7 +240,7 @@ class SAE(nn.Module):
         return encoded_tokens
 
     
-    def quantize(self, encoded_tokens):
+    def quantize(self, encoded_tokens, dtypes=None):
         slide_token, dtype_token, patch_tokens = encoded_tokens[:, :1], encoded_tokens[:, 1:2], encoded_tokens[:, 2:]
 
         level_to_logits, level_to_hots, level_to_probs = [], [], []
@@ -248,6 +254,26 @@ class SAE(nn.Module):
             level_to_probs.append(probs)
         
         level_to_encoded = self._to_quantized(level_to_hots)
+
+        if not self.is_pretraining:
+            assert dtypes is not None
+            level_to_final_hots = []
+            for i, to_logits in enumerate(self.level_to_final_logits):
+                x = torch.concat(level_to_hots[:i + 1], dim=-1) # b n d
+
+                dtype_embs = repeat(self.dtype_embedding(torch.concat(dtypes, dim=0)), 'b d -> b n d', n=x.shape[1]) # b n d
+                x = torch.concat((x, dtype_embs), dim=-1)
+
+                logits = to_logits(x)
+                hots = F.gumbel_softmax(logits, dim=-1, hard=True)
+                probs = F.softmax(logits, dim=-1)
+
+                level_to_logits[i] = logits
+                level_to_final_hots.append(hots)
+                level_to_probs[i] = probs
+                level_to_encoded[i] = hots @ self.final_codebooks[i]
+            level_to_hots = level_to_final_hots
+
         level_to_encoded = torch.stack(level_to_encoded)
 
         return level_to_encoded, level_to_hots, [probs.argmax(dim=-1) for probs in level_to_probs], level_to_probs
@@ -279,7 +305,7 @@ class SAE(nn.Module):
 
         encoded_tokens_prequant  = self.encode(imgs, slides, dtypes)
 
-        level_to_encoded, level_to_hots, level_to_clusters, level_to_probs = self.quantize(encoded_tokens_prequant)
+        level_to_encoded, level_to_hots, level_to_clusters, level_to_probs = self.quantize(encoded_tokens_prequant, dtypes=dtypes)
 
         flat_slides = torch.concat(slides, dim=0)
         flat_dtypes = torch.concat(dtypes, dim=0)
@@ -349,8 +375,9 @@ class SAE(nn.Module):
             # count all dtypes the same for now
             losses = {}
             neigh_total, recon_total = 0, 0
-            neigh_scaler = self.variable_neigh_scaler.get_scaler()
-            self.variable_neigh_scaler.step()
+            # neigh_scaler = self.variable_neigh_scaler.get_scaler()
+            # self.variable_neigh_scaler.step()
+            neigh_scaler = self.neigh_scaler_value
             for level, scaler in enumerate(self.level_scalers):
                 losses[f'neigh_loss_level_{level}'] = level_to_neigh_loss[level]
                 neigh_total += level_to_neigh_loss[level] * scaler
