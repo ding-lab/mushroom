@@ -202,41 +202,59 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, c
 
     return learner_data
 
+# def construct_training_batch(batch):
+#     dtype_pool = sorted(set([entry['anchor_dtype_idx'] for entry in batch]).union([entry['pos_dtype_idx'] for entry in batch]))
+#     to_return = {
+#         'tiles': {x:[] for x in dtype_pool},
+#         'slides': {x:[] for x in dtype_pool},
+#         'dtypes': {x:[] for x in dtype_pool},
+#         'pairs': {x:[] for x in dtype_pool},
+#         'is_anchor': {x:[] for x in dtype_pool},
+#     }
+
+#     for i, entry in enumerate(batch):
+#         dtype_idx = entry['anchor_dtype_idx']
+#         to_return['tiles'][dtype_idx].append(entry['anchor_tile'])
+#         to_return['slides'][dtype_idx].append(entry['anchor_slide_idx'])
+#         to_return['dtypes'][dtype_idx].append(entry['anchor_dtype_idx'])
+#         to_return['pairs'][dtype_idx].append(i)
+#         to_return['is_anchor'][dtype_idx].append(True)
+
+#         dtype_idx = entry['pos_dtype_idx']
+#         to_return['tiles'][dtype_idx].append(entry['pos_tile'])
+#         to_return['slides'][dtype_idx].append(entry['pos_slide_idx'])
+#         to_return['dtypes'][dtype_idx].append(entry['pos_dtype_idx'])
+#         to_return['pairs'][dtype_idx].append(i)
+#         to_return['is_anchor'][dtype_idx].append(False)
+
+#     to_return['tiles'] = [torch.stack(to_return['tiles'][k]) for k in dtype_pool]
+#     to_return['slides'] = [torch.tensor(to_return['slides'][k], dtype=torch.long) for k in dtype_pool]
+#     to_return['dtypes'] = [torch.tensor(to_return['dtypes'][k], dtype=torch.long) for k in dtype_pool]
+#     to_return['pairs'] = [torch.tensor(to_return['pairs'][k], dtype=torch.long) for k in dtype_pool]
+#     to_return['is_anchor'] = [torch.tensor(to_return['is_anchor'][k], dtype=torch.bool) for k in dtype_pool]
+
+#     return to_return
+
 def construct_training_batch(batch):
-    dtype_pool = sorted(set([entry['anchor_dtype_idx'] for entry in batch]).union([entry['pos_dtype_idx'] for entry in batch]))
+    dtype_pool = sorted(set([entry['dtype_idxs'] for entry in batch for x in entry['dtype_idxs']]))
     to_return = {
         'tiles': {x:[] for x in dtype_pool},
         'slides': {x:[] for x in dtype_pool},
         'dtypes': {x:[] for x in dtype_pool},
         'pairs': {x:[] for x in dtype_pool},
-        'is_anchor': {x:[] for x in dtype_pool},
     }
 
     for i, entry in enumerate(batch):
-        dtype_idx = entry['anchor_dtype_idx']
-        to_return['tiles'][dtype_idx].append(entry['anchor_tile'])
-        to_return['slides'][dtype_idx].append(entry['anchor_slide_idx'])
-        to_return['dtypes'][dtype_idx].append(entry['anchor_dtype_idx'])
-        to_return['pairs'][dtype_idx].append(i)
-        to_return['is_anchor'][dtype_idx].append(True)
-
-        dtype_idx = entry['pos_dtype_idx']
-        to_return['tiles'][dtype_idx].append(entry['pos_tile'])
-        to_return['slides'][dtype_idx].append(entry['pos_slide_idx'])
-        to_return['dtypes'][dtype_idx].append(entry['pos_dtype_idx'])
-        to_return['pairs'][dtype_idx].append(i)
-        to_return['is_anchor'][dtype_idx].append(False)
+        for slide_idx, dtype_idx in enumerate(entry['dtype_idxs']):
+            to_return['tiles'][dtype_idx].append(entry[f'tile_{slide_idx}'])
+            to_return['slides'][dtype_idx].append(slide_idx)
+            to_return['dtypes'][dtype_idx].append(dtype_idx)
+            to_return['pairs'][dtype_idx].append(i)
 
     to_return['tiles'] = [torch.stack(to_return['tiles'][k]) for k in dtype_pool]
     to_return['slides'] = [torch.tensor(to_return['slides'][k], dtype=torch.long) for k in dtype_pool]
     to_return['dtypes'] = [torch.tensor(to_return['dtypes'][k], dtype=torch.long) for k in dtype_pool]
     to_return['pairs'] = [torch.tensor(to_return['pairs'][k], dtype=torch.long) for k in dtype_pool]
-    to_return['is_anchor'] = [torch.tensor(to_return['is_anchor'][k], dtype=torch.bool) for k in dtype_pool]
-    # to_return['tiles'] = torch.nested.nested_tensor([torch.stack(to_return['tiles'][k]) for k in dtype_pool])
-    # to_return['slides'] = torch.nested.nested_tensor([torch.tensor(to_return['slides'][k], dtype=torch.long) for k in dtype_pool])
-    # to_return['dtypes'] = torch.nested.nested_tensor([torch.tensor(to_return['dtypes'][k], dtype=torch.long) for k in dtype_pool])
-    # to_return['pairs'] = torch.nested.nested_tensor([torch.tensor(to_return['pairs'][k], dtype=torch.long) for k in dtype_pool])
-    # to_return['is_anchor'] = torch.nested.nested_tensor([torch.tensor(to_return['pairs'][k], dtype=torch.bool) for k in dtype_pool])
 
     return to_return
 
@@ -257,9 +275,6 @@ def construct_inference_batch(batch):
     to_return['tiles'] = [torch.stack(to_return['tiles'][k]) for k in dtype_pool]
     to_return['slides'] = [torch.tensor(to_return['slides'][k], dtype=torch.long) for k in dtype_pool]
     to_return['dtypes'] = [torch.tensor(to_return['dtypes'][k], dtype=torch.long) for k in dtype_pool]  
-    # to_return['tiles'] = torch.nested.nested_tensor([torch.stack(to_return['tiles'][k]) for k in dtype_pool])
-    # to_return['slides'] = torch.nested.nested_tensor([torch.tensor(to_return['slides'][k], dtype=torch.long) for k in dtype_pool])
-    # to_return['dtypes'] = torch.nested.nested_tensor([torch.tensor(to_return['dtypes'][k], dtype=torch.long) for k in dtype_pool])
 
     return to_return
 
@@ -319,35 +334,37 @@ class ImageTrainingDataset(Dataset):
         return self.n
 
     def __getitem__(self, idx):
-        anchor_idx = np.random.choice(self.section_idxs)
-        anchor_section = self.section_ids[anchor_idx]
-        anchor_dtype = anchor_section[1]
+        # anchor_idx = np.random.choice(self.section_idxs)
+        # anchor_section = self.section_ids[anchor_idx]
+        # anchor_dtype = anchor_section[1]
 
-        if anchor_idx == 0:
-            pos_idx = 1
-        elif anchor_idx == len(self.section_ids) - 1:
-            pos_idx = anchor_idx - 1
-        else:
-            pos_idx = np.random.choice([anchor_idx - 1, anchor_idx + 1])
-        pos_section = self.section_ids[pos_idx]
-        pos_dtype = pos_section[1]
+        # if anchor_idx == 0:
+        #     pos_idx = 1
+        # elif anchor_idx == len(self.section_ids) - 1:
+        #     pos_idx = anchor_idx - 1
+        # else:
+        #     pos_idx = np.random.choice([anchor_idx - 1, anchor_idx + 1])
+        # pos_section = self.section_ids[pos_idx]
+        # pos_dtype = pos_section[1]
 
-        anchor_tile, pos_tile = self.transform(
-            [self.section_to_img[anchor_section], self.section_to_img[pos_section]],
-            [anchor_dtype, pos_dtype]
+        # anchor_tile, pos_tile = self.transform(
+        #     [self.section_to_img[anchor_section], self.section_to_img[pos_section]],
+        #     [anchor_dtype, pos_dtype]
+        # )
+
+        # anchor_dtype_idx = self.dtypes.index(anchor_dtype)
+        # pos_dtype_idx = self.dtypes.index(pos_dtype)
+
+        tiles = self.transform(
+            [self.section_to_img[self.section_ids[sidx]] for sidx in self.section_idxs],
+            [self.section_ids[sidx][1] for sidx in self.section_idxs]
         )
+        dtype_idxs = [self.dtypes.index(self.section_ids[sidx][1]) for sidx in self.section_idxs]
 
-        anchor_dtype_idx = self.dtypes.index(anchor_dtype)
-        pos_dtype_idx = self.dtypes.index(pos_dtype)
+        to_return = {f'tile_{i}':tile for i, tile in enumerate(tiles)}
+        to_return['dtype_idxs'] = dtype_idxs
 
-        return {
-            'anchor_slide_idx': anchor_idx,
-            'pos_slide_idx': pos_idx,
-            'anchor_tile': anchor_tile,
-            'pos_tile': pos_tile,
-            'anchor_dtype_idx': anchor_dtype_idx,
-            'pos_dtype_idx': pos_dtype_idx,
-        }
+        return to_return
     
     def display_batch(self, batch, idx, dtype_to_channels, display_channels={'xenium': 'EPCAM', 'multiplex': 'E-Cadherin'}):
         items = []

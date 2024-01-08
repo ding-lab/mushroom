@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
@@ -26,7 +27,7 @@ class SAEargs:
     num_clusters: Iterable = (8, 4, 2,)
     recon_scaler: float = 1.
     neigh_scaler: float = 1.
-    level_scalers: Iterable = (.8, .4, .2,)
+    level_scalers: Iterable = (1., 1., 1.)
 
 
 
@@ -52,7 +53,7 @@ def get_decoder(in_dim, decoder_dims, n_channels):
     return nn.Sequential(*blocks)
 
 class VariableScaler(object):
-    def __init__(self, max_value, total_steps=1, min_value=0.0, function='log'):
+    def __init__(self, max_value, total_steps=1, min_value=0.0, function='linear'):
 
         if function == 'linear':
             self.values = np.linspace(min_value, max_value, total_steps)
@@ -98,18 +99,19 @@ class SAE(nn.Module):
         self.recon_scaler = recon_scaler
         # self.neigh_scaler = 0.
         self.neigh_scaler = neigh_scaler
-        self.neigh_scaler_value = 0.
-        # self.variable_neigh_scaler = VariableScaler(self.neigh_scaler, total_steps=total_steps, min_value=0.)
+        # self.neigh_scaler_value = 0.
+        self.variable_neigh_scaler = VariableScaler(self.neigh_scaler, total_steps=total_steps, min_value=0.)
 
         self.num_clusters = num_clusters
         self.codebook_dim = codebook_dim
-        self.level_scalers = level_scalers
+        self.level_scalers = [x if i == 0 else 0. for i, x in enumerate(level_scalers)]
 
         self.dtypes = dtypes
-        self.encoder = encoder
+        self.encoders = torch.nn.ModuleList([deepcopy(encoder) for i in range(len(num_clusters))])
         self.num_patches, self.encoder_dim = encoder.pos_embedding.shape[-2:]
         self.num_patches -= 1 # don't count slide embedding
-        self.encoder.pos_embedding  = nn.Parameter(torch.randn(1, self.num_patches + 2, self.encoder_dim)) # need to add token for slide and dtype embedding  
+        for encoder in self.encoders:
+            encoder.pos_embedding  = nn.Parameter(torch.randn(1, self.num_patches + 2, self.encoder_dim)) # need to add token for slide and dtype embedding  
 
         self.dtype_to_decoder_dims = dtype_to_decoder_dims
         self.dtype_to_n_channels = dtype_to_n_channels
@@ -146,16 +148,16 @@ class SAE(nn.Module):
                 dim = codebook_dim * total
                 self.codebooks.append(nn.Parameter(torch.randn(self.num_clusters[0], dim)))
 
-        self.level_to_final_logits = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(np.sum(self.num_clusters[:i + 1]) + self.encoder_dim, self.encoder_dim),
-                nn.ReLU(),
-                nn.Linear(self.encoder_dim, self.encoder_dim),
-                nn.ReLU(),
-                nn.Linear(self.encoder_dim, np.product(self.num_clusters[:i + 1])),
-            ) for i in range(len(self.num_clusters))
-        ])
-        self.final_codebooks = torch.nn.ParameterList([nn.Parameter(torch.randn(np.product(self.num_clusters[:i + 1]), codebook_dim)) for i in range(len(self.num_clusters))])
+        # self.level_to_final_logits = nn.ModuleList([
+        #     nn.Sequential(
+        #         nn.Linear(np.sum(self.num_clusters[:i + 1]) + self.encoder_dim, self.encoder_dim),
+        #         nn.ReLU(),
+        #         nn.Linear(self.encoder_dim, self.encoder_dim),
+        #         nn.ReLU(),
+        #         nn.Linear(self.encoder_dim, np.product(self.num_clusters[:i + 1])),
+        #     ) for i in range(len(self.num_clusters))
+        # ])
+        # self.final_codebooks = torch.nn.ParameterList([nn.Parameter(torch.randn(np.product(self.num_clusters[:i + 1]), codebook_dim)) for i in range(len(self.num_clusters))])
 
     def _to_quantized(self, hots):
         b, n, d = hots[0].shape[0], hots[0].shape[1], self.codebook_dim
@@ -180,71 +182,75 @@ class SAE(nn.Module):
             results.append(encoded)
         return results
 
-    def end_pretraining(self):
-        modules = [
-            self.encoder,
-            self.dtype_to_patch,
-            self.dtype_to_decoder,
-            self.level_to_logits,
-            self.codebooks
-        ]
-        for module in modules:
-            for param in module.parameters():
-                param.requires_grad = False
+    # def end_pretraining(self):
+    #     modules = [
+    #         self.encoder,
+    #         self.dtype_to_patch,
+    #         self.dtype_to_decoder,
+    #         self.level_to_logits,
+    #         self.codebooks
+    #     ]
+    #     for module in modules:
+    #         for param in module.parameters():
+    #             param.requires_grad = False
         
-        params = [
-            self.slide_embedding,
-            self.dtype_embedding
-        ]
-        for param in params:
-                param.requires_grad = False
+    #     params = [
+    #         self.slide_embedding,
+    #         self.dtype_embedding
+    #     ]
+    #     for param in params:
+    #             param.requires_grad = False
 
-        self.is_pretraining = False
-        self.neigh_scaler_value = self.neigh_scaler
+    #     self.is_pretraining = False
+    #     self.neigh_scaler_value = self.neigh_scaler
        
     def encode(self, imgs, slides, dtypes):
-        patches = []
-        for img, dtype in zip(imgs, dtypes):
-            # get patches
-            name = self.dtypes[dtype[0]]
-            patches.append(self.dtype_to_patch[name](img)) # b (h w) (p1 p2 c)
+        level_to_encoded_tokens = []
+        for encoder in self.encoders:
+            patches = []
+            for img, dtype in zip(imgs, dtypes):
+                # get patches
+                name = self.dtypes[dtype[0]]
+                patches.append(self.dtype_to_patch[name](img)) # b (h w) (p1 p2 c)
 
-        tokens = torch.concat(patches, dim=0)
-        slides = torch.concat(slides, dim=0)
-        dtypes = torch.concat(dtypes, dim=0)
+            all_tokens = torch.concat(patches, dim=0)
+            all_slides = torch.concat(slides, dim=0)
+            all_dtypes = torch.concat(dtypes, dim=0)
 
-        # patches = self.patch_to_emb(patches)
+            # patches = self.patch_to_emb(patches)
 
-        batch, num_patches, *_ = tokens.shape
+            batch, num_patches, *_ = all_tokens.shape
 
-        # # patch to encoder tokens
-        # tokens = self.patch_to_emb(patches)
+            # # patch to encoder tokens
+            # tokens = self.patch_to_emb(patches)
 
-        # add slide emb
-        slide_tokens = self.slide_embedding(slides) # b d
-        dtype_tokens = self.dtype_embedding(dtypes) # b d
+            # add slide emb
+            slide_tokens = self.slide_embedding(all_slides) # b d
+            dtype_tokens = self.dtype_embedding(all_dtypes) # b d
 
-        slide_tokens = rearrange(slide_tokens, 'b d -> b 1 d')
-        dtype_tokens = rearrange(dtype_tokens, 'b d -> b 1 d')
+            slide_tokens = rearrange(slide_tokens, 'b d -> b 1 d')
+            dtype_tokens = rearrange(dtype_tokens, 'b d -> b 1 d')
 
-        slide_tokens += self.encoder.pos_embedding[:, :1]
-        dtype_tokens += self.encoder.pos_embedding[:, 1:2]
-        tokens += self.encoder.pos_embedding[:, 2:(num_patches + 2)]
+            slide_tokens += encoder.pos_embedding[:, :1]
+            dtype_tokens += encoder.pos_embedding[:, 1:2]
+            all_tokens += encoder.pos_embedding[:, 2:(num_patches + 2)]
 
-        # add slide and dtype token
-        tokens = torch.cat((slide_tokens, dtype_tokens, tokens), dim=1)
+            # add slide and dtype token
+            tokens = torch.cat((slide_tokens, dtype_tokens, all_tokens), dim=1)
 
-        # attend with vision transformer
-        encoded_tokens = self.encoder.transformer(tokens)
+            # attend with vision transformer
+            encoded_tokens = encoder.transformer(tokens)
 
-        return encoded_tokens
+            level_to_encoded_tokens.append(encoded_tokens)
+        
+        return level_to_encoded_tokens
 
     
-    def quantize(self, encoded_tokens, dtypes=None):
-        slide_token, dtype_token, patch_tokens = encoded_tokens[:, :1], encoded_tokens[:, 1:2], encoded_tokens[:, 2:]
-
+    def quantize(self, level_to_encoded_tokens):
         level_to_logits, level_to_hots, level_to_probs = [], [], []
-        for to_logits in self.level_to_logits:
+        for encoded_tokens, to_logits in zip(level_to_encoded_tokens, self.level_to_logits):
+            slide_token, dtype_token, patch_tokens = encoded_tokens[:, :1], encoded_tokens[:, 1:2], encoded_tokens[:, 2:]
+
             logits = to_logits(patch_tokens)
             hots = F.gumbel_softmax(logits, dim=-1, hard=True)
             probs = F.softmax(logits, dim=-1)
@@ -254,26 +260,6 @@ class SAE(nn.Module):
             level_to_probs.append(probs)
         
         level_to_encoded = self._to_quantized(level_to_hots)
-
-        if not self.is_pretraining:
-            assert dtypes is not None
-            level_to_final_hots = []
-            for i, to_logits in enumerate(self.level_to_final_logits):
-                x = torch.concat(level_to_hots[:i + 1], dim=-1) # b n d
-
-                dtype_embs = repeat(self.dtype_embedding(torch.concat(dtypes, dim=0)), 'b d -> b n d', n=x.shape[1]) # b n d
-                x = torch.concat((x, dtype_embs), dim=-1)
-
-                logits = to_logits(x)
-                hots = F.gumbel_softmax(logits, dim=-1, hard=True)
-                probs = F.softmax(logits, dim=-1)
-
-                level_to_logits[i] = logits
-                level_to_final_hots.append(hots)
-                level_to_probs[i] = probs
-                level_to_encoded[i] = hots @ self.final_codebooks[i]
-            level_to_hots = level_to_final_hots
-
         level_to_encoded = torch.stack(level_to_encoded)
 
         return level_to_encoded, level_to_hots, [probs.argmax(dim=-1) for probs in level_to_probs], level_to_probs
@@ -294,7 +280,7 @@ class SAE(nn.Module):
         return dtype_to_pred_pixels
 
 
-    def forward(self, imgs, slides, dtypes, pairs=None, is_anchor=None):
+    def forward(self, imgs, slides, dtypes, pairs=None):
         """
         imgs - (dtypes, b, c, h, w) where dtypes is number of different dtypes in batch
         slides - (dtypes, b,)
@@ -303,9 +289,9 @@ class SAE(nn.Module):
         """
         outputs = []
 
-        encoded_tokens_prequant  = self.encode(imgs, slides, dtypes)
+        level_to_encoded_tokens_prequant  = self.encode(imgs, slides, dtypes)
 
-        level_to_encoded, level_to_hots, level_to_clusters, level_to_probs = self.quantize(encoded_tokens_prequant, dtypes=dtypes)
+        level_to_encoded, level_to_hots, level_to_clusters, level_to_probs = self.quantize(level_to_encoded_tokens_prequant)
 
         flat_slides = torch.concat(slides, dim=0)
         flat_dtypes = torch.concat(dtypes, dim=0)
@@ -322,7 +308,6 @@ class SAE(nn.Module):
             dtype_to_true_pixels[name] = patches.mean(-2)
 
         outputs = {
-            'encoded_tokens_prequant': encoded_tokens_prequant,
             'level_to_encoded': level_to_encoded,
             'cluster_probs': level_to_probs,
             'clusters': level_to_clusters,
@@ -330,20 +315,33 @@ class SAE(nn.Module):
             'dtype_to_pred_pixels': dtype_to_pred_pixels,
         }
 
-        if pairs is not None and is_anchor is not None:
+        if pairs is not None:
+            order = torch.unique(flat_slides) # 0 to n-1
+            flat_order = torch.argsort((flat_pairs * (flat_slides.max() + 1)) + flat_slides)
+            print(flat_pairs, flat_slides)
+            print(flat_order)
             dtype_to_recon_loss = {}
             for name in self.dtypes:
                 for level, pixel_level in enumerate(dtype_to_pred_pixels[name]):
                     dtype_to_recon_loss[f'{level}_{name}'] = F.mse_loss(pixel_level, dtype_to_true_pixels[name])
 
             flat_pairs = torch.concat(pairs, dim=0)
-            flat_is_anchor = torch.concat(is_anchor, dim=0)
             level_to_neigh_loss = []
-            level_to_frac_loss = []
             for level, (clusters, probs, hots) in enumerate(zip(level_to_clusters, level_to_probs, level_to_hots)):
+                # clusters: currently ((b n) h w) -> future (b n h w)
+                # probs: currently ((b n) h w c) -> future (b n h w c)
+                clusters = clusters[flat_order]
+                probs = clusters[flat_order]
+                hots = clusters[flat_order]
 
-                anchor_mask = flat_is_anchor
-                pos_mask = ~flat_is_anchor
+                
+
+
+                
+
+
+
+
 
                 anchor_clusters, anchor_probs, anchor_hots = clusters[anchor_mask], probs[anchor_mask], hots[anchor_mask]
                 anchor_order = torch.argsort(flat_pairs[anchor_mask])
@@ -354,36 +352,47 @@ class SAE(nn.Module):
                 anchor_probs, pos_probs = anchor_probs[anchor_order], pos_probs[pos_order]
                 anchor_hots, pos_hots = anchor_hots[anchor_order], pos_hots[pos_order]
 
-                # anchor_sums, pos_sums = anchor_hots.sum(1), pos_hots.sum(1)
-                # anchor_sums /= anchor_sums.sum(-1).unsqueeze(-1)
-                # pos_sums /= pos_sums.sum(-1).unsqueeze(-1)
-                # # level_to_frac_loss.append(F.mse_loss(anchor_sums, pos_sums))
-                # level_to_neigh_loss.append(F.mse_loss(anchor_sums, pos_sums))
-
-
-                # level_to_neigh_loss.append(F.cross_entropy(anchor_hots, pos_hots))
-
-                # level_to_neigh_loss.append(F.cross_entropy(anchor_probs, pos_probs))
-
                 token_idxs = torch.randint(anchor_probs.shape[1], (anchor_probs.shape[0],))
 
                 pred = anchor_probs[torch.arange(anchor_probs.shape[0]), token_idxs]
                 target = pos_clusters[torch.arange(pos_clusters.shape[0]), token_idxs]
                 level_to_neigh_loss.append(F.cross_entropy(pred, target))
 
+                # anchor_mask = flat_is_anchor
+                # pos_mask = ~flat_is_anchor
+
+                # anchor_clusters, anchor_probs, anchor_hots = clusters[anchor_mask], probs[anchor_mask], hots[anchor_mask]
+                # anchor_order = torch.argsort(flat_pairs[anchor_mask])
+                # pos_clusters, pos_probs, pos_hots = clusters[pos_mask], probs[pos_mask], hots[pos_mask]
+                # pos_order = torch.argsort(flat_pairs[pos_mask])
+
+                # anchor_clusters, pos_clusters = anchor_clusters[anchor_order], pos_clusters[pos_order]
+                # anchor_probs, pos_probs = anchor_probs[anchor_order], pos_probs[pos_order]
+                # anchor_hots, pos_hots = anchor_hots[anchor_order], pos_hots[pos_order]
+
+                # token_idxs = torch.randint(anchor_probs.shape[1], (anchor_probs.shape[0],))
+
+                # pred = anchor_probs[torch.arange(anchor_probs.shape[0]), token_idxs]
+                # target = pos_clusters[torch.arange(pos_clusters.shape[0]), token_idxs]
+                # level_to_neigh_loss.append(F.cross_entropy(pred, target))
+
 
             # count all dtypes the same for now
             losses = {}
             neigh_total, recon_total = 0, 0
-            # neigh_scaler = self.variable_neigh_scaler.get_scaler()
-            # self.variable_neigh_scaler.step()
-            neigh_scaler = self.neigh_scaler_value
+            # neigh_scaler = self.neigh_scaler
+            neigh_scaler = self.variable_neigh_scaler.get_scaler()
+            self.variable_neigh_scaler.step()
+            dtype_to_scaler = {
+                'multiplex': 1.,
+                'xenium': 1.
+            }
             for level, scaler in enumerate(self.level_scalers):
                 losses[f'neigh_loss_level_{level}'] = level_to_neigh_loss[level]
                 neigh_total += level_to_neigh_loss[level] * scaler
                 for name in self.dtypes:
                     losses[f'recon_loss_{level}_{name}'] = dtype_to_recon_loss[f'{level}_{name}']
-                    recon_total += dtype_to_recon_loss[f'{level}_{name}'] * scaler
+                    recon_total += dtype_to_recon_loss[f'{level}_{name}'] * scaler * dtype_to_scaler[name]
             losses['recon_loss'] = recon_total
             losses['neigh_loss'] = neigh_total
 
