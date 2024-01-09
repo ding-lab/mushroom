@@ -316,10 +316,10 @@ class SAE(nn.Module):
         }
 
         if pairs is not None:
+            flat_pairs = torch.concat(pairs, dim=0)
             order = torch.unique(flat_slides) # 0 to n-1
+            n = torch.unique(flat_slides).shape[0]
             flat_order = torch.argsort((flat_pairs * (flat_slides.max() + 1)) + flat_slides)
-            print(flat_pairs, flat_slides)
-            print(flat_order)
             dtype_to_recon_loss = {}
             for name in self.dtypes:
                 for level, pixel_level in enumerate(dtype_to_pred_pixels[name]):
@@ -331,32 +331,62 @@ class SAE(nn.Module):
                 # clusters: currently ((b n) h w) -> future (b n h w)
                 # probs: currently ((b n) h w c) -> future (b n h w c)
                 clusters = clusters[flat_order]
-                probs = clusters[flat_order]
-                hots = clusters[flat_order]
+                probs = probs[flat_order]
+                hots = hots[flat_order]
+                # print(clusters.shape, probs.shape, hots.shape)
 
-                
+                clusters = rearrange(clusters, '(b n) d -> b n d', n=n) # d is (h w)
+                probs = rearrange(probs, '(b n) d c -> b n d c', n=n)
+                hots = rearrange(hots, '(b n) d c -> b n d c', n=n)
 
+                clusters_pred, clusters_target = clusters[:, :n-1], clusters[:, 1:]
+                probs_pred, probs_target = probs[:, :n-1], probs[:, 1:]
+                hots_pred, hots_target = clusters[:, :n-1], clusters[:, 1:]
 
-                
+                # probs_pred: (b n-1 (h w) c)
+                # clusters_target: (b n-1 (h w))
 
+                # probs_pred = rearrange(probs_pred, 'b n ... -> (b n) ...')
+                # clusters_target = rearrange(clusters_target, 'b n ... -> (b n) ...')
 
+                # token_idxs = torch.randint(probs_pred.shape[-2], (probs_pred.shape[0],))
+                # print(token_idxs.shape, probs_pred.shape, clusters_target.shape)
+                # pred = probs_pred[torch.arange(probs_pred.shape[0]), torch.arange(probs_pred.shape[1]), token_idxs]
+                # target = clusters_target[torch.arange(clusters_target.shape[0]), torch.arange(clusters_target.shape[1]), token_idxs]
 
+                pred = rearrange(probs_pred, 'b ... c -> b c ...')
+                # target = target
+                target = rearrange(probs_target, 'b ... c -> b c ...')
 
-
-                anchor_clusters, anchor_probs, anchor_hots = clusters[anchor_mask], probs[anchor_mask], hots[anchor_mask]
-                anchor_order = torch.argsort(flat_pairs[anchor_mask])
-                pos_clusters, pos_probs, pos_hots = clusters[pos_mask], probs[pos_mask], hots[pos_mask]
-                pos_order = torch.argsort(flat_pairs[pos_mask])
-
-                anchor_clusters, pos_clusters = anchor_clusters[anchor_order], pos_clusters[pos_order]
-                anchor_probs, pos_probs = anchor_probs[anchor_order], pos_probs[pos_order]
-                anchor_hots, pos_hots = anchor_hots[anchor_order], pos_hots[pos_order]
-
-                token_idxs = torch.randint(anchor_probs.shape[1], (anchor_probs.shape[0],))
-
-                pred = anchor_probs[torch.arange(anchor_probs.shape[0]), token_idxs]
-                target = pos_clusters[torch.arange(pos_clusters.shape[0]), token_idxs]
                 level_to_neigh_loss.append(F.cross_entropy(pred, target))
+
+                
+
+
+                
+
+
+
+
+
+                # anchor_clusters, anchor_probs, anchor_hots = clusters[anchor_mask], probs[anchor_mask], hots[anchor_mask]
+                # anchor_order = torch.argsort(flat_pairs[anchor_mask])
+                # pos_clusters, pos_probs, pos_hots = clusters[pos_mask], probs[pos_mask], hots[pos_mask]
+                # pos_order = torch.argsort(flat_pairs[pos_mask])
+
+                # anchor_clusters, pos_clusters = anchor_clusters[anchor_order], pos_clusters[pos_order]
+                # anchor_probs, pos_probs = anchor_probs[anchor_order], pos_probs[pos_order]
+                # anchor_hots, pos_hots = anchor_hots[anchor_order], pos_hots[pos_order]
+
+                # token_idxs = torch.randint(anchor_probs.shape[1], (anchor_probs.shape[0],))
+
+                # pred = anchor_probs[torch.arange(anchor_probs.shape[0]), token_idxs]
+                # target = pos_clusters[torch.arange(pos_clusters.shape[0]), token_idxs]
+                # level_to_neigh_loss.append(F.cross_entropy(pred, target))
+
+
+
+
 
                 # anchor_mask = flat_is_anchor
                 # pos_mask = ~flat_is_anchor

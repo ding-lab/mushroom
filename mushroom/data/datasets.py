@@ -236,7 +236,7 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, c
 #     return to_return
 
 def construct_training_batch(batch):
-    dtype_pool = sorted(set([entry['dtype_idxs'] for entry in batch for x in entry['dtype_idxs']]))
+    dtype_pool = sorted(set([x for entry in batch for x in entry['dtype_idxs']]))
     to_return = {
         'tiles': {x:[] for x in dtype_pool},
         'slides': {x:[] for x in dtype_pool},
@@ -377,11 +377,11 @@ class ImageTrainingDataset(Dataset):
         for ax, item in zip(axs, items):
             dtype = self.dtypes[item['dtypes']]
             slide = item['slides']
-            is_anchor = item['is_anchor']
+            # is_anchor = item['is_anchor']
             channel = display_channels[dtype]
             ax.imshow(item['tiles'][dtype_to_channels[dtype].index(channel)])
             ax.axis('off')
-            ax.set_title(f'{dtype} {slide} {is_anchor} {channel}')
+            ax.set_title(f'{dtype} {slide} {channel}')
 
 
 class ImageInferenceDataset(Dataset):

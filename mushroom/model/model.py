@@ -68,7 +68,6 @@ class WandbImageCallback(Callback):
             )
 
 class VariableTrainingCallback(Callback):
-<<<<<<< HEAD
     def __init__(self, pretrain_for=2):
         self.pretrain_for = pretrain_for
 
@@ -77,22 +76,6 @@ class VariableTrainingCallback(Callback):
             pass
             # print(f'stoppint pretraining level {self.pretrain_for}')
             # pl_module.sae.end_pretraining()
-=======
-    def __init__(self, freeze_at=[0,10], level_scalers=[1., 1., 1.]):
-        self.freeze_at = freeze_at
-        self.level_scalers = level_scalers
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        # pass
-        for level, epoch in enumerate(self.freeze_at):
-            if epoch == pl_module.current_epoch:
-                print(f'freezing level {level}')
-                pl_module.sae.freeze_cluster_level(level)
-                scalers = [x if level + 1 == lev else 0.
-                           for lev, x in enumerate(self.level_scalers)]
-                print('adjusting scalers', scalers)
-                pl_module.sae.level_scalers = scalers
->>>>>>> 6ef66edcbe8f27e32480cb46f17be44ca8d01c7e
 
 
 
@@ -209,15 +192,10 @@ class LitMushroom(LightningModule):
 
     def training_step(self, batch, batch_idx):
         tiles, slides, dtypes = batch['tiles'], batch['slides'], batch['dtypes']
-        pairs, is_anchor = batch['pairs'], batch['is_anchor']
-        outs = self.forward(tiles, slides, dtypes, pairs=pairs, is_anchor=is_anchor)
-<<<<<<< HEAD
-        # outs['neigh_scaler'] = self.sae.variable_neigh_scaler.get_scaler()
-        outs['neigh_scaler'] = self.sae.neigh_scaler_value
-=======
+        pairs = batch['pairs']
+        outs = self.forward(tiles, slides, dtypes, pairs=pairs)
         outs['neigh_scaler'] = self.sae.variable_neigh_scaler.get_scaler()
-        # outs['neigh_scaler'] = self.sae.neigh_scaler
->>>>>>> 6ef66edcbe8f27e32480cb46f17be44ca8d01c7e
+        # outs['neigh_scaler'] = self.sae.neigh_scaler_value
         outs['recon_scaler'] = self.sae.recon_scaler
         for level, x in enumerate(self.sae.level_scalers):
             outs[f'level_scaler_{level}'] = x
@@ -265,8 +243,8 @@ class LitMushroom(LightningModule):
             'agg_clusters': clusters, # list of (n h w), length num levels
         }
 
-    def forward(self, tiles, slides, dtypes, pairs=None, is_anchor=None):
-        losses, outputs = self.sae(tiles, slides, dtypes, pairs=pairs, is_anchor=is_anchor)
+    def forward(self, tiles, slides, dtypes, pairs=None):
+        losses, outputs = self.sae(tiles, slides, dtypes, pairs=pairs)
 
         if 'overall_loss' in losses:
             losses['loss'] = losses['overall_loss']
