@@ -68,14 +68,16 @@ class WandbImageCallback(Callback):
             )
 
 class VariableTrainingCallback(Callback):
-    def __init__(self, pretrain_for=2):
-        self.pretrain_for = pretrain_for
+    def __init__(self, freeze_at=[2,4]):
+        self.freeze_at = freeze_at
 
     def on_train_epoch_end(self, trainer, pl_module):
-        if self.pretrain_for == pl_module.current_epoch:
-            pass
-            # print(f'stoppint pretraining level {self.pretrain_for}')
-            # pl_module.sae.end_pretraining()
+        for epoch in self.freeze_at:
+            if epoch == pl_module.current_epoch:
+                pass
+                # pl_module.sae.freeze_
+                # print(f'stoppint pretraining level {self.pretrain_for}')
+                # pl_module.sae.end_pretraining()
 
 
 
@@ -201,7 +203,7 @@ class LitMushroom(LightningModule):
             outs[f'level_scaler_{level}'] = x
 
         order = sorted([k for k in outs.keys() if k!='outputs'])
-        self.log_dict({f'{k}_step':outs[k] for k in order}, on_step=True, on_epoch=False, prog_bar=True)
+        # self.log_dict({f'{k}_step':outs[k] for k in order}, on_step=True, on_epoch=False, prog_bar=True)
         self.log_dict({f'{k}_epoch':outs[k] for k in order}, on_step=False, on_epoch=True, prog_bar=True)
         return outs
     

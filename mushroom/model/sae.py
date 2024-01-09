@@ -104,7 +104,8 @@ class SAE(nn.Module):
 
         self.num_clusters = num_clusters
         self.codebook_dim = codebook_dim
-        self.level_scalers = [x if i == 0 else 0. for i, x in enumerate(level_scalers)]
+        self.level_scalers = level_scalers
+        # self.level_scalers = [x if i == 0 else 0. for i, x in enumerate(level_scalers)]
 
         self.dtypes = dtypes
         self.encoders = torch.nn.ModuleList([deepcopy(encoder) for i in range(len(num_clusters))])
@@ -358,7 +359,18 @@ class SAE(nn.Module):
                 # target = target
                 target = rearrange(probs_target, 'b ... c -> b c ...')
 
-                level_to_neigh_loss.append(F.cross_entropy(pred, target))
+                neigh_loss = F.cross_entropy(pred, target)
+
+
+
+                 
+
+
+
+                level_to_neigh_loss.append(neigh_loss)
+
+                
+
 
                 
 
@@ -426,7 +438,7 @@ class SAE(nn.Module):
             losses['recon_loss'] = recon_total
             losses['neigh_loss'] = neigh_total
 
-            overall = recon_total * self.recon_scaler + neigh_total * neigh_scaler
+            overall = (recon_total * self.recon_scaler) + (neigh_total * neigh_scaler)
             losses['overall_loss'] = overall
         else:
             losses = {}
