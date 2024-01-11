@@ -50,8 +50,23 @@ def get_decoder(in_dim, decoder_dims, n_channels):
     return nn.Sequential(*blocks)
 
 class VariableScaler(object):
-    def __init__(self, max_value, total_steps=1, min_value=0.0):
-        self.values = np.linspace(min_value, max_value, total_steps)
+    def __init__(self, max_value, total_steps=1, min_value=0.0, n_cycles=5, method='linear'):
+        self.method = method
+
+        if method == 'linear':
+            self.values = np.linspace(min_value, max_value, total_steps)
+        elif method == 'jitter':
+            n = int(total_steps / 2 / n_cycles)
+            a = np.full((n_cycles, n,), min_value)
+            # b = np.full((n_cycles, n,), max_value)
+            b = repeat(np.linspace(min_value, max_value, n), 'n -> n_cycles n', n_cycles=n_cycles)
+
+            self.values = np.empty((n_cycles * 2, n))
+
+            self.values[::2,:] = a
+            self.values[1::2,:] = b
+            self.values = self.values.flatten()
+
         self.idx = 0
 
     def get_scaler(self):
