@@ -11,6 +11,6 @@ def read_he(filepath):
     if ext == 'tif':
         return tifffile.imread(filepath)
     elif ext == 'svs':
-        raise RuntimeError('.svs not implemented yet')
+        raise RuntimeError('reading .svs not implemented yet')
     else:
         raise RuntimeError(f'Extension {ext} not supported for H&E')
