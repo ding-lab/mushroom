@@ -109,6 +109,24 @@ def get_common_channels(filepaths, channel_mapping=None, pct_expression=.02):
     return channels
 
 
+def to_multiplex(adata, tiling_size=64):
+    size = get_fullres_size(adata)
+    n_rows, n_cols = size[-2] // tiling_size + 1, size[-1] // tiling_size + 1
+
+    pts = adata.obsm['spatial'][:, [1, 0]]
+
+    img = np.zeros((n_rows, n_cols, adata.shape[1]))
+    for r in range(n_rows):
+        r1, r2 = r * tiling_size, (r + 1) * tiling_size
+        row_mask = ((pts[:, 0] >= r1) & (pts[:, 0] < r2))
+        row_adata, row_pts = adata[row_mask], pts[row_mask]
+        for c in range(n_cols):
+            c1, c2 = c * tiling_size, (c + 1) * tiling_size
+            col_mask = ((row_pts[:, 1] >= c1) & (row_pts[:, 1] < c2))
+            img[r, c] = row_adata[col_mask].X.sum(0)
+    return img
+
+
 def get_section_to_image(
         section_to_adata,
         channels,
@@ -153,193 +171,3 @@ def get_section_to_image(
         section_to_adata[sid] = adata
 
     return section_to_img, section_to_adata
-
-
-def get_learner_data(
-        config, scale, size, patch_size,
-        channels=None, channel_mapping=None, fullres_size=None, pct_expression=.02
-    ):
-    sid_to_filepaths = {
-        entry['id']:d['filepath'] for entry in config for d in entry['data']
-        if d['dtype']=='visium'
-    }
-    section_ids = [entry['id'] for entry in config
-                   if 'visium' in [d['dtype'] for d in entry['data']]]
-
-    if channels is None:
-        fps = [d['filepath'] for entry in config for d in entry['data']
-                if d['dtype']=='visium']
-        channels = get_common_channels(
-            fps, channel_mapping=channel_mapping, pct_expression=pct_expression
-        )
-    logging.info(f'using {len(channels)} channels')
-    logging.info(f'{len(section_ids)} sections detected: {section_ids}')
-
-    logging.info(f'processing sections')
-    section_to_adata = {sid:adata_from_visium(fp, normalize=True) for sid, fp in sid_to_filepaths.items()}
-    section_to_img, section_to_adata = get_section_to_image( # labeled image where pixels represent location of barcodes, is converted by transform to actual exp image
-        section_to_adata, channels, patch_size=patch_size, channel_mapping=channel_mapping, scale=scale, fullres_size=fullres_size
-    )
-
-    # TODO: find a cleaner way to do this, is long because trying to avoid explicit sparse matrix conversion of .X
-    means = np.asarray(np.vstack(
-        [a.X.mean(0) for a in section_to_adata.values()]
-    ).mean(0)).squeeze()
-    stds = np.asarray(np.vstack(
-        [a.X.std(0) for a in section_to_adata.values()]
-    ).mean(0)).squeeze()
-    normalize = Normalize(means, stds)
-
-
-    train_transform = VisiumTrainingTransform(size=size, patch_size=patch_size, normalize=normalize)
-    inference_transform = VisiumInferenceTransform(size=size, patch_size=patch_size, normalize=normalize)
-
-    logging.info('generating training dataset')
-    train_ds = VisiumSectionDataset(
-        section_ids, section_to_adata, section_to_img, transform=train_transform
-    )
-    logging.info('generating inference dataset')
-    inference_ds = VisiumInferenceSectionDataset(
-        section_ids, section_to_img, section_to_adata, transform=inference_transform, size=size
-    )
-
-    learner_data = LearnerData(
-        section_to_img=section_to_img,
-        train_transform=train_transform,
-        inference_transform=inference_transform,
-        train_ds=train_ds,
-        inference_ds=inference_ds,
-        channels=channels
-    )
-
-    return learner_data
-
-
-class VisiumTrainingTransform(object):
-    def __init__(self, size=(256, 256), patch_size=32, normalize=None):
-        self.size = size
-        self.patch_size = patch_size
-        self.output_size = (self.size[0] // self.patch_size, self.size[1] // self.patch_size)
-        self.output_patch_size = 1
-        self.transforms = Compose([
-            RandomCrop(size, padding_mode='reflect'),
-            RandomHorizontalFlip(),
-            RandomVerticalFlip(),
-        ])
-
-        self.normalize = normalize if normalize is not None else nn.Identity()
-
-    def __call__(self, tiles, adatas):
-        """
-        tile - (n h w)
-        """
-        outs = []
-        tiles = self.transforms(tiles).squeeze(0)
-
-        for tile, adata in zip(tiles, adatas):
-            # tile = self.transforms(tile)
-
-            # tile = tile.squeeze()
-
-            tile = format_expression(tile, adata, patch_size=self.patch_size) # expects (h, w)
-
-            tile = self.normalize(tile)
-
-            outs.append(tile)
-
-        return outs
-        
-    
-class VisiumInferenceTransform(object):
-    def __init__(self, size=(256, 256), patch_size=32, normalize=None):
-        self.size = size
-        self.patch_size = patch_size
-        self.normalize = normalize if normalize is not None else nn.Identity()
-
-    def __call__(self, tile, adata):
-        tile = format_expression(tile, adata, patch_size=self.patch_size)
-        tile = self.normalize(tile).squeeze(0)
-
-        return tile
-    
-class VisiumSectionDataset(Dataset):
-    def __init__(self, sections, section_to_adata, section_to_img, transform=None):
-        self.sections = sections
-        self.section_to_adata = section_to_adata
-        self.section_to_img = section_to_img # (h w)
-        self.stacked = torch.stack([section_to_img[section] for section in sections])
-
-        self.transform = transform if transform is not None else nn.Identity()
-        self.means = torch.tensor(self.transform.normalize.mean)
-        self.stds = torch.tensor(self.transform.normalize.std)
-
-        self.n = np.iinfo(np.int64).max # make infinite
-
-    def __len__(self):
-        return self.n
-
-    def __getitem__(self, idx):
-        anchor_section = np.random.choice(self.sections)
-        anchor_idx = self.sections.index(anchor_section)
-
-        if anchor_idx == 0:
-            pos_idx = 1
-        elif anchor_idx == len(self.sections) - 1:
-            pos_idx = anchor_idx - 1
-        else:
-            pos_idx = np.random.choice([anchor_idx - 1, anchor_idx + 1])
-        pos_section = self.sections[pos_idx]
-
-        start = min(anchor_idx, pos_idx)
-
-        anchor_tile, pos_tile = self.transform(
-            self.stacked[start:start + 2], [self.section_to_adata[self.sections[i]] for i in [start, start + 1]]
-        )
-
-        return {
-            'anchor_idx': anchor_idx,
-            'pos_idx': pos_idx,
-            'anchor_tile': anchor_tile,
-            'pos_tile': pos_tile,
-        }
-
-  
-class VisiumInferenceSectionDataset(InferenceSectionDataset):
-    def __init__(
-            self, sections, section_to_img, section_to_adata,
-            size=(256, 256), transform=None
-        ):
-        super().__init__(sections, section_to_img, size=size, transform=transform)
-        self.section_to_adata = section_to_adata
-
-    def image_from_tiles(self, x, to_expression=False, adata=None):
-        pad_h, pad_w = x.shape[-2] // 4, x.shape[-1] // 4
-        x = x[..., pad_h:-pad_h, pad_w:-pad_w]
-        
-        if to_expression:
-            ps = self.transform.patch_size
-            new = torch.zeros(x.shape[0], x.shape[1], adata.shape[1], x.shape[-2] // ps, x.shape[-1] // ps,
-                             dtype=torch.float32)
-            for i in range(x.shape[0]):
-                for j in range(x.shape[1]):
-                    new[i, j] = format_expression(x[i, j, 0], adata, ps)
-            x = new
-        x = rearrange(x, 'ph pw c h w -> c (ph h) (pw w)')
-        return x
-
-    def __getitem__(self, idx):
-        section_idx, row_idx, col_idx = self.idx_to_coord[idx]
-        section = self.sections[section_idx]
-        img = self.section_to_tiles[section][row_idx, col_idx]
-        adata = self.section_to_adata[section]
-
-        img = self.transform(img, adata)
-
-        outs = {
-            'idx': section_idx,
-            'row_idx': row_idx,
-            'col_idx': col_idx,
-            'tile': img,
-        }
-        
-        return outs

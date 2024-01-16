@@ -17,9 +17,6 @@ from lightning.pytorch import loggers as pl_loggers
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint, Callback
 
-import mushroom.data.multiplex as multiplex
-import mushroom.data.xenium as xenium
-import mushroom.data.visium as visium
 import mushroom.visualization.utils as vis_utils
 from mushroom.model.sae import SAEargs
 from mushroom.model.model import LitMushroom, WandbImageCallback

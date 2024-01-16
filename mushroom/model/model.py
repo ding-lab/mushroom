@@ -166,8 +166,9 @@ class LitMushroom(LightningModule):
         pairs, is_anchor = batch['pairs'], batch['is_anchor']
         outs = self.forward(tiles, slides, dtypes, pairs=pairs, is_anchor=is_anchor)
         outs['neigh_scaler'] = self.sae.variable_neigh_scaler.get_scaler()
-        self.log_dict({f'{k}_step':v for k, v in outs.items() if k!='outputs'}, on_step=True, on_epoch=False, prog_bar=True)
-        self.log_dict({f'{k}_epoch':v for k, v in outs.items() if k!='outputs'}, on_step=False, on_epoch=True, prog_bar=True)
+        batch_size = sum([v.shape[1] for k, v in outs['outputs']['dtype_to_true_pixels'].items()]) // 2
+        self.log_dict({f'{k}_step':v for k, v in outs.items() if k!='outputs'}, on_step=True, on_epoch=False, prog_bar=True, batch_size=batch_size)
+        self.log_dict({f'{k}_epoch':v for k, v in outs.items() if k!='outputs'}, on_step=False, on_epoch=True, prog_bar=True, batch_size=batch_size)
         return outs
     
     def predict_step(self, batch):
