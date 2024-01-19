@@ -40,6 +40,11 @@ class WandbImageCallback(Callback):
                 slides = [x.to(pl_module.device) for x in slides]
                 dtypes = [x.to(pl_module.device) for x in dtypes]
                 outs = pl_module.forward(tiles, slides, dtypes)
+
+                # do this properly eventually
+                outs['outputs']['dtype_to_true_pixels'] = {k:v.cpu() for k, v in outs['outputs']['dtype_to_true_pixels'].items()}
+                outs['outputs']['dtype_to_pred_pixels'] = {k:v.cpu() for k, v in outs['outputs']['dtype_to_pred_pixels'].items()}
+
                 outputs.append(outs)
 
         formatted = pl_module.format_prediction_outputs(outputs)

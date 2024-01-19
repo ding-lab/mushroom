@@ -8,6 +8,7 @@ import torch.nn as nn
 import scanpy as sc
 import squidpy as sq
 from einops import rearrange
+from sklearn.neighbors import NearestNeighbors
 from torch.utils.data import Dataset
 from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, RandomCrop, Compose, Normalize
 
@@ -109,21 +110,45 @@ def get_common_channels(filepaths, channel_mapping=None, pct_expression=.02):
     return channels
 
 
-def to_multiplex(adata, tiling_size=64):
+def to_multiplex(adata, tiling_size=64, method='radius', radius_sf=1.):
     size = get_fullres_size(adata)
     n_rows, n_cols = size[-2] // tiling_size + 1, size[-1] // tiling_size + 1
 
     pts = adata.obsm['spatial'][:, [1, 0]]
 
-    img = np.zeros((n_rows, n_cols, adata.shape[1]))
-    for r in range(n_rows):
-        r1, r2 = r * tiling_size, (r + 1) * tiling_size
-        row_mask = ((pts[:, 0] >= r1) & (pts[:, 0] < r2))
-        row_adata, row_pts = adata[row_mask], pts[row_mask]
-        for c in range(n_cols):
-            c1, c2 = c * tiling_size, (c + 1) * tiling_size
-            col_mask = ((row_pts[:, 1] >= c1) & (row_pts[:, 1] < c2))
-            img[r, c] = row_adata[col_mask].X.sum(0)
+    if method == 'radius':
+        grid_pts = np.meshgrid(np.arange(n_rows), np.arange(n_cols)) # (2, n_rows, n_cols)
+        grid_pts = rearrange(grid_pts, 'b h w -> (h w) b')
+        
+        nbhs = NearestNeighbors(radius=tiling_size * radius_sf)
+        nbhs.fit(pts)
+        transformed = grid_pts * tiling_size + tiling_size / 2
+        dists, idxs = nbhs.radius_neighbors(transformed)
+        dists = 1 - (dists / tiling_size)
+
+        X = adata.X
+        minimum = X.min(0)
+
+        img = np.zeros((n_rows, n_cols, adata.shape[1]))
+        for (r, c), distances, indices in zip(grid_pts, dists, idxs):
+            if len(distances):
+                vals = X[indices] * rearrange(distances, 'd -> d 1')
+                img[r, c] = vals.sum(0)
+            else:
+                img[r, c] = minimum
+    elif method == 'grid':
+        img = np.zeros((n_rows, n_cols, adata.shape[1]))
+        for r in range(n_rows):
+            r1, r2 = r * tiling_size, (r + 1) * tiling_size
+            row_mask = ((pts[:, 0] >= r1) & (pts[:, 0] < r2))
+            row_adata, row_pts = adata[row_mask], pts[row_mask]
+            for c in range(n_cols):
+                c1, c2 = c * tiling_size, (c + 1) * tiling_size
+                col_mask = ((row_pts[:, 1] >= c1) & (row_pts[:, 1] < c2))
+                img[r, c] = row_adata[col_mask].X.sum(0)
+    else:
+        raise RuntimeError(f'method was {method}, can only be "grid" or "radius"')
+
     return img
 
 

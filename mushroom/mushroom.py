@@ -247,3 +247,30 @@ class Mushroom(object):
     def display_clusters(self, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True):
         vis_utils.display_clusters(
             self.clusters[level], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices)
+        
+    def assign_pts(self, pts, section_id=None, section_idx=None, level=-1, scale=True):
+        """
+        pts are (x, y)
+        """
+        assert section_id is not None or section_idx is not None, f'either section id or section index must be given'
+        if scale:
+            scaler = self.input_ppm / self.target_ppm
+            pts = pts / scaler
+            pts = pts.astype(int)
+
+        section_idx = self.section_ids.index(section_id) if section_id is not None else section_idx
+        
+        nbhds = self.clusters[level][section_idx]
+        max_h, max_w = nbhds.shape[0] - 1, nbhds.shape[1] - 1
+
+        pts[pts[:, 0] > max_w, 0] = max_w
+        pts[pts[:, 1] > max_h, 1] = max_h
+
+        labels = nbhds[pts[:, 1], pts[:, 0]]
+
+        return labels
+
+
+        
+
+

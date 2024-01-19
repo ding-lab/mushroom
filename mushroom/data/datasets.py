@@ -105,7 +105,7 @@ def get_xenium_section_to_img(
     section_to_img = {}
     for sid, adata in section_to_adata.items():
         logging.info(f'generating image data for section {sid}')
-        img = xenium.to_multiplex(adata, tiling_size=tiling_size)
+        img = xenium.to_multiplex(adata, tiling_size=tiling_size, method='grid')
         img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
         section_to_img[sid] = img
    
@@ -146,44 +146,6 @@ def get_visium_section_to_img(
     normalize = generate_norm_transform(section_to_img)
 
     return section_to_img, section_to_adata, normalize, channels
-# def get_visium_section_to_img(
-#         config, target_ppm, channels=None, channel_mapping=None, pct_expression=.02
-#     ):
-#     logging.info(f'starting visium processing')
-#     sid_to_filepaths = {
-#         entry['id']:d['filepath'] for entry in config for d in entry['data']
-#         if d['dtype']=='visium'
-#     }
-#     if not len(sid_to_filepaths):
-#         return None, None, None
-#     section_ids = [entry['id'] for entry in config
-#                    if 'visium' in [d['dtype'] for d in entry['data']]]
-
-#     if channels is None:
-#         fps = [d['filepath'] for entry in config for d in entry['data']
-#                 if d['dtype']=='visium']
-#         channels = visium.get_common_channels(
-#             fps, channel_mapping=channel_mapping, pct_expression=pct_expression
-#         )
-#     logging.info(f'using {len(channels)} channels')
-#     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
-
-#     logging.info(f'processing sections')
-#     section_to_adata = {sid:visium.adata_from_visium(fp, normalize=True) for sid, fp in sid_to_filepaths.items()}
-#     section_to_img, section_to_adata = visium.get_section_to_image( # labeled image where pixels represent location of barcodes, is converted by transform to actual exp image
-#         section_to_adata, channels, target_ppm=target_ppm, patch_size=1, channel_mapping=channel_mapping
-#     )
-
-#      # TODO: find a cleaner way to do this, is long because trying to avoid explicit sparse matrix conversion of .X
-#     means = np.asarray(np.vstack(
-#         [a.X.mean(0) for a in section_to_adata.values()]
-#     ).mean(0)).squeeze()
-#     stds = np.asarray(np.vstack(
-#         [a.X.std(0) for a in section_to_adata.values()]
-#     ).mean(0)).squeeze()
-#     normalize = Normalize(means, stds)
-
-#     return section_to_img, section_to_adata, normalize, channels
 
 
 def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, contrast_pct=None, pct_expression=.02):
@@ -393,7 +355,7 @@ class ImageTrainingDataset(Dataset):
             'pos_dtype_idx': pos_dtype_idx,
         }
     
-    def display_batch(self, batch, idx, dtype_to_channels, display_channels={'xenium': 'EPCAM', 'multiplex': 'E-Cadherin'}):
+    def display_batch(self, batch, idx, dtype_to_channels, display_channels={'xenium': 'EPCAM', 'multiplex': 'E-Cadherin', 'visium': 'EPCAM', 'he': 'red'}):
         items = []
         for position, dtype in enumerate(self.dtypes):
             if idx in batch['pairs'][position]:

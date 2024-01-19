@@ -96,5 +96,5 @@ def get_common_channels(filepaths, channel_mapping=None):
     return channels
 
 
-def to_multiplex(adata, tiling_size=64):
-    return visium.to_multiplex(adata, tiling_size=tiling_size)
+def to_multiplex(adata, tiling_size=64, method='grid', radius_sf=1.):
+    return visium.to_multiplex(adata, tiling_size=tiling_size, method=method, radius_sf=radius_sf)
