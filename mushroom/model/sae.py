@@ -9,7 +9,6 @@ from torch import nn
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from einops import repeat, rearrange
-from vector_quantize_pytorch import VectorQuantize
 
 
 @dataclass
@@ -137,14 +136,6 @@ class SAE(nn.Module):
 
         self.level_to_logits = nn.ModuleList([nn.Linear(self.encoder_dim, n) for n in self.num_clusters])
 
-        # self.codebooks = nn.ParameterList([nn.Parameter(torch.randn(self.num_clusters[0], codebook_dim))])
-        # if len(self.num_clusters) > 1:
-        #     total = 1
-        #     for n in self.num_clusters[1:]:
-        #         total *= n
-        #         dim = codebook_dim * total
-        #         self.codebooks.append(nn.Parameter(torch.randn(self.num_clusters[0], dim)))
-
         self.codebooks = nn.ParameterList([nn.Parameter(torch.randn(self.num_clusters[0], codebook_dim))])
         if len(self.num_clusters) > 1:
             total = 1
@@ -152,19 +143,6 @@ class SAE(nn.Module):
                 total *= n
                 dim = codebook_dim * total
                 self.codebooks.append(nn.Parameter(torch.randn(self.num_clusters[0], dim)))
-
-        # self.dtype_to_codebooks = nn.ParameterDict({
-        #     dtype:copy.deepcopy(self.codebooks)
-        #     for dtype in dtype_to_n_channels.keys()
-        # })
-
-        self.is_pretraining = True
-        self.codes_to_integrated_logits = nn.ModuleList([nn.Sequential(
-            nn.Linear(codebook_dim + + self.encoder_dim, codebook_dim),
-            nn.ReLU(),
-            nn.Linear(codebook_dim, n),
-        ) for n in self.num_clusters])
-        self.integrated_codebooks = nn.ParameterList([nn.Parameter(torch.randn(c, codebook_dim)) for c in self.num_clusters])
 
 
     def _to_quantized(self, hots):
@@ -190,35 +168,35 @@ class SAE(nn.Module):
             results.append(encoded)
         return results
     
-    def end_pretraining(self):
-        modules = [
-            self.encoder,
-            self.dtype_to_patch,
-            self.level_to_logits,
-            self.codebooks
-        ]
-        for module in modules:
-            for param in module.parameters():
-                param.requires_grad = False
+    # def end_pretraining(self):
+    #     modules = [
+    #         self.encoder,
+    #         self.dtype_to_patch,
+    #         self.level_to_logits,
+    #         self.codebooks
+    #     ]
+    #     for module in modules:
+    #         for param in module.parameters():
+    #             param.requires_grad = False
         
-        params = [
-            self.slide_embedding,
-            self.dtype_embedding
-        ]
-        for param in params:
-            param.requires_grad = False
+    #     params = [
+    #         self.slide_embedding,
+    #         self.dtype_embedding
+    #     ]
+    #     for param in params:
+    #         param.requires_grad = False
 
-        nested_params = [
-            self.codebooks,
-        ]
+    #     nested_params = [
+    #         self.codebooks,
+    #     ]
 
-        for ps in nested_params:
-            for param in ps:
-                param.requires_grad = False
+    #     for ps in nested_params:
+    #         for param in ps:
+    #             param.requires_grad = False
 
-        self.is_pretraining = False
-        # self.neigh_scaler_value = self.neigh_scaler
-        self.variable_neigh_scaler = VariableScaler(self.neigh_scaler, total_steps=self.total_steps, min_value=self.neigh_scaler)
+    #     self.is_pretraining = False
+    #     # self.neigh_scaler_value = self.neigh_scaler
+    #     self.variable_neigh_scaler = VariableScaler(self.neigh_scaler, total_steps=self.total_steps, min_value=self.neigh_scaler)
 
        
     def encode(self, imgs, slides, dtypes):
@@ -276,32 +254,6 @@ class SAE(nn.Module):
         level_to_encoded = torch.stack(level_to_encoded)
 
         return level_to_encoded, [probs.argmax(dim=-1) for probs in level_to_probs], level_to_probs
-    
-    def quantize_integrated(self, level_to_encoded, slides, dtypes):
-        # slide_embs = self.slide_embedding(slide) # b d
-        slide_embs = self.slide_embedding(slides) + self.dtype_embedding(dtypes)
-        slide_embs = rearrange(slide_embs, 'b d -> 1 b 1 d')
-        slide_embs = repeat(slide_embs, 'a b c d -> (a a1) b (c c1) d',
-                            a1=level_to_encoded.shape[0], c1=level_to_encoded.shape[2])
-        level_to_encoded = torch.concat((level_to_encoded, slide_embs), dim=-1)
-
-        level_to_reencoded, level_to_logits, level_to_hots, level_to_probs = [], [], [], []
-        for x, to_logits, codebook in zip(level_to_encoded, self.codes_to_integrated_logits, self.integrated_codebooks):
-            logits = to_logits(x)
-            hots = F.gumbel_softmax(logits, dim=-1, hard=True)
-            probs = F.softmax(logits, dim=-1)
-
-            encoded = hots @ codebook
-
-            level_to_logits.append(logits)
-            level_to_hots.append(hots)
-            level_to_probs.append(probs)
-            level_to_reencoded.append(encoded)
-        
-        level_to_reencoded = torch.stack(level_to_reencoded)
-
-        return level_to_reencoded, [probs.argmax(dim=-1) for probs in level_to_probs], level_to_probs
-
 
     
     def decode(self, level_to_encoded, slide, dtype):
@@ -320,7 +272,7 @@ class SAE(nn.Module):
         return dtype_to_pred_pixels
 
 
-    def forward(self, imgs, slides, dtypes, pairs=None, is_anchor=None, dtype_specific=False):
+    def forward(self, imgs, slides, dtypes, pairs=None, is_anchor=None):
         """
         imgs - (dtypes, b, c, h, w) where dtypes is number of different dtypes in batch
         slides - (dtypes, b,)
@@ -333,8 +285,6 @@ class SAE(nn.Module):
         encoded_tokens_prequant  = self.encode(imgs, slides, dtypes)
 
         level_to_encoded, level_to_clusters, level_to_probs = self.quantize(encoded_tokens_prequant)
-        if not self.is_pretraining and not dtype_specific:
-            level_to_encoded, level_to_clusters, level_to_probs = self.quantize_integrated(level_to_encoded, flat_slides, flat_dtypes)
 
         dtype_to_pred_pixels = self.decode(level_to_encoded, flat_slides, flat_dtypes) # returns dtype:(level, b, n, channels) where b and channels vary based on dtype
 

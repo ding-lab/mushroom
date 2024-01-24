@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 import yaml
-from einops import rearrange
+from einops import rearrange, repeat
 from torch.utils.data import DataLoader
 from torchio.transforms import Resize
 from lightning.pytorch import loggers as pl_loggers
@@ -137,6 +137,40 @@ class Mushroom(object):
             mushroom.model.load_state_dict(state_dict)
 
         return mushroom
+    
+    @staticmethod
+    def generate_multi_interpolated_volume(mushrooms, z_scaler=.1, level=-1):
+        dtypes = [m.dtypes[0] for m in mushrooms]
+
+        section_positions = []
+        sids = []
+        for obj in mushrooms:
+            section_positions += [entry['position'] for entry in obj.sections]
+            sids += obj.section_ids
+        section_positions, sids = zip(*sorted([(p, tup) for p, tup in zip(section_positions, sids)], key=lambda x: x[0]))
+
+        section_positions = (np.asarray(section_positions) * z_scaler).astype(int)
+        for i, (val, (ident, dtype)) in enumerate(zip(section_positions, sids)):
+            if i > 0:
+                old = section_positions[i-1]
+                old_ident = sids[i-1][0]
+                if old == val and old_ident != ident:
+                    section_positions[i:] = section_positions[i:] + 1
+
+        start, stop = section_positions[0], section_positions[-1]
+        volumes = []
+        for dtype, mushroom in zip(dtypes, mushrooms):
+            positions = [p for p, (_, dt) in zip(section_positions, sids) if dt==dtype]
+            clusters = mushroom.clusters[level].copy()
+            if positions[0] != start:
+                positions.insert(0, start)
+                clusters = np.concatenate((clusters[:1], clusters))
+            if positions[-1] != stop:
+                positions.append(stop)
+                clusters = np.concatenate((clusters, clusters[-1:]))
+            volume = utils.get_interpolated_volume(clusters, positions)
+            volumes.append(volume)
+        return volumes
 
     
     def initialize_trainer(
@@ -197,6 +231,7 @@ class Mushroom(object):
                 old = section_positions[i-1]
                 if old == val:
                     section_positions[i:] = section_positions[i:] + 1
+        print(section_positions)
     
         cluster_volume = utils.get_interpolated_volume(self.clusters[level], section_positions)
         return cluster_volume

@@ -45,6 +45,8 @@ setup(
         'einops',
         'wandb',
         'timm',
+        'leidenalg',
+        'igraph',
     ],
     extras_require={
         'viz': [

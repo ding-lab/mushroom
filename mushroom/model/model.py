@@ -78,8 +78,9 @@ class VariableTrainingCallback(Callback):
 
     def on_train_epoch_end(self, trainer, pl_module):
         if self.end_pretraining_at == pl_module.current_epoch:
-            logging.info(f'stopping pretraining at {self.end_pretraining_at}')
-            pl_module.sae.end_pretraining()
+            pass
+            # logging.info(f'stopping pretraining at {self.end_pretraining_at}')
+            # pl_module.sae.end_pretraining()
                 # pass
                 # pl_module.sae.freeze_
                 # print(f'stoppint pretraining level {self.pretrain_for}')
