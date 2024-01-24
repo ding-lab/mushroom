@@ -72,6 +72,19 @@ class WandbImageCallback(Callback):
                 caption=[str(i) for i in range(len(cs))]
             )
 
+class VariableTrainingCallback(Callback):
+    def __init__(self, end_pretraining_at=5):
+        self.end_pretraining_at = end_pretraining_at
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if self.end_pretraining_at == pl_module.current_epoch:
+            logging.info(f'stopping pretraining at {self.end_pretraining_at}')
+            pl_module.sae.end_pretraining()
+                # pass
+                # pl_module.sae.freeze_
+                # print(f'stoppint pretraining level {self.pretrain_for}')
+                # pl_module.sae.end_pretraining()
+
 
 class LitMushroom(LightningModule):
     def __init__(
