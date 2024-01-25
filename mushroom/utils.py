@@ -9,6 +9,8 @@ from torchio.transforms import Resize
 from einops import rearrange
 from sklearn.cluster import AgglomerativeClustering
 
+CHARS = 'abcdefghijklmnopqrstuvwxyz'
+
 def listfiles(folder, regex=None):
     """Return all files with the given regex in the given folder structure"""
     for root, folders, files in os.walk(folder):
@@ -32,15 +34,18 @@ def get_interpolated_volume(stacked, section_positions, method='label_gaussian')
         stacked = rearrange(stacked, 'n h w -> 1 n h w')
         squeeze = True
 
-    interp_volume = np.zeros((stacked.shape[0], section_range[-1], stacked.shape[-2], stacked.shape[-1]), dtype=stacked.dtype)
+    interp_volume = np.zeros((stacked.shape[0], section_range[-1] + 1, stacked.shape[-2], stacked.shape[-1]), dtype=stacked.dtype)
     for i in range(stacked.shape[1] - 1):
         l1, l2 = section_positions[i], section_positions[i+1]
 
         stack = stacked[:, i:i+2]
+
         transform = Resize((l2 - l1, stack.shape[-2], stack.shape[-1]), image_interpolation=method)
         resized = transform(stack)
-
         interp_volume[:, l1:l2] = resized
+    
+    # add last section
+    interp_volume[:, -1] = stacked[:, -1]
     
     if squeeze:
         interp_volume = rearrange(interp_volume, '1 n h w -> n h w')

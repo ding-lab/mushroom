@@ -99,8 +99,8 @@ class SAE(nn.Module):
         self.num_clusters = num_clusters
         self.codebook_dim = codebook_dim
         self.total_steps = total_steps
-        # self.variable_neigh_scaler = VariableScaler(neigh_scaler, total_steps=total_steps, min_value=0.)
-        self.variable_neigh_scaler = VariableScaler(0., total_steps=total_steps, min_value=0.)
+        self.variable_neigh_scaler = VariableScaler(neigh_scaler, total_steps=total_steps, min_value=0.)
+        # self.variable_neigh_scaler = VariableScaler(0., total_steps=total_steps, min_value=0.)
 
         self.num_clusters = num_clusters
         self.dtypes = dtypes

@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import pickle
 from pathlib import Path
 
@@ -19,12 +20,282 @@ from lightning.pytorch.callbacks import ModelCheckpoint, Callback
 
 import mushroom.visualization.utils as vis_utils
 from mushroom.model.sae import SAEargs
-from mushroom.model.model import LitMushroom, WandbImageCallback, VariableTrainingCallback
+from mushroom.model.model import LitSpore, WandbImageCallback, VariableTrainingCallback
 from mushroom.data.datasets import get_learner_data, construct_training_batch, construct_inference_batch
+from mushroom.model.integration import integrate_volumes
 import mushroom.utils as utils
 
 
 class Mushroom(object):
+    def __init__(
+            self,
+            sections,
+            dtype_to_chkpt=None,
+            sae_kwargs=None,
+            trainer_kwargs=None,
+        ):
+        self.sections = sections
+        self.dtype_to_chkpt = dtype_to_chkpt
+        self.sae_kwargs = sae_kwargs
+        self.trainer_kwargs = trainer_kwargs
+        self.input_ppm = self.trainer_kwargs['input_ppm']
+        self.target_ppm = self.trainer_kwargs['target_ppm']
+
+        self.section_ids = [(entry['id'], d['dtype']) for entry in sections
+                       for d in entry['data']]
+        self.dtypes = sorted({x for _, x in self.section_ids})
+
+        self.dtype_to_spore = {}
+        for dtype in self.dtypes:
+            logging.info(f'loading spore for {dtype}')
+            dtype_sections = [entry for entry in sections if dtype in [item['dtype'] for item in entry['data']]]
+            for i, entry in enumerate(dtype_sections):
+                entry['data'] = [item for item in entry['data'] if item['dtype'] == dtype]
+                dtype_sections[i] = entry
+            
+            # eventually add custom paramters for data types
+            out_dir = self.trainer_kwargs['out_dir']
+            trainer_kwargs['save_dir'] = os.path.join(out_dir, f'{dtype}_chkpts')
+            trainer_kwargs['log_dir'] = os.path.join(out_dir, f'{dtype}_logs')
+
+            chkpt_filepath = self.dtype_to_chkpt[dtype] if self.dtype_to_chkpt is not None else None
+
+            spore = Spore(dtype_sections, chkpt_filepath=chkpt_filepath, sae_kwargs=sae_kwargs, trainer_kwargs=trainer_kwargs)
+
+            self.dtype_to_spore[dtype] = spore
+
+        self.integrated_clusters = None
+        self.dtype_to_volume = None
+
+    @staticmethod
+    def from_config(mushroom_config, accelerator=None):
+        if isinstance(mushroom_config, str):
+            mushroom_config = yaml.safe_load(open(mushroom_config))
+
+        if accelerator is not None:
+            mushroom_config['trainer_kwargs']['accelerator'] = accelerator
+
+        mushroom = Mushroom(
+            mushroom_config['sections'],
+            dtype_to_chkpt=mushroom_config['dtype_to_chkpt'],
+            sae_kwargs=mushroom_config['sae_kwargs'],
+            trainer_kwargs=mushroom_config['trainer_kwargs'],
+        )
+
+        if mushroom_config['dtype_to_chkpt'] is not None:
+            logging.info(f'chkpt files detected, embedding to spores')
+            mushroom.embed_sections()
+
+        return mushroom
+
+    def train(self, dtypes=None):
+        dtypes = dtypes if dtypes is not None else self.dtypes
+        if self.dtype_to_chkpt is None:
+            self.dtype_to_chkpt = {}
+
+        for dtype in dtypes:
+            logging.info(f'starting training for {dtype}')
+            spore = self.dtype_to_spore[dtype]
+            spore.train()
+
+            # save chkpts
+            chkpt_dir = os.path.join(self.trainer_kwargs['out_dir'], f'{dtype}_chkpts')
+            fps = [fp for fp in os.listdir(chkpt_dir) if 'last' in fp]
+            if len(fps) == 1:
+                chkpt_fp = os.path.join(chkpt_dir, 'last.ckpt')
+            else:
+                val = np.max([int(re.sub(r'^last-v([0-9]+).ckpt$', r'\1', fp)) for fp in fps])
+                chkpt_fp = os.path.join(chkpt_dir, f'last-v{val}.ckpt')
+
+            logging.info(f'finished training {dtype}, saved chkpt to {chkpt_fp}')
+            self.dtype_to_chkpt[dtype] = chkpt_fp
+
+    def embed_sections(self, dtypes=None):
+        dtypes = dtypes if dtypes is not None else self.dtypes
+
+        for dtype in dtypes:
+            logging.info(f'embedding {dtype} spore')
+            spore = self.dtype_to_spore[dtype]
+            spore.embed_sections()
+
+    def save(self, output_dir=None):
+        if output_dir is None:
+            output_dir = self.trainer_kwargs['out_dir']
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        logging.info(f'saving config and outputs to {output_dir}')
+
+        config = {
+            'sections': self.sections,
+            'dtype_to_chkpt': self.dtype_to_chkpt,
+            'sae_kwargs': self.sae_kwargs,
+            'trainer_kwargs': self.trainer_kwargs
+        }
+
+        # clusters
+        dtype_to_clusters = {
+            'integrated': self.integrated_clusters,
+        }
+        for dtype, spore in self.dtype_to_spore.items():
+            dtype_to_clusters[dtype] = spore.clusters
+
+        # cluster intensities
+        dtype_to_cluster_intensities = {
+            'dtype_specific': [
+                self.calculate_cluster_intensities(level=level)
+                for level in range(len(next(iter(self.dtype_to_spore.values())).clusters))
+            ]
+        }
+        if self.integrated_clusters is not None:
+            dtype_to_cluster_intensities['integrated'] = [
+                    self.calculate_cluster_intensities(use_integrated=True, level=level) if self.integrated_clusters[level] is not None else None
+                    for level in range(len(self.integrated_clusters))
+            ]
+
+        outputs = {
+            'dtype_to_volume': self.dtype_to_volume,
+            'dtype_to_clusters': dtype_to_clusters,
+            'dtype_to_cluster_intensities': dtype_to_cluster_intensities,
+        }
+
+        yaml.safe_dump(
+            config,
+            open(os.path.join(output_dir, f'config.yaml'), 'w')
+        )
+        np.save(
+            os.path.join(output_dir, f'outputs.npy'),
+            outputs
+        )
+
+    def calculate_cluster_intensities(self, use_integrated=False, use_predicted=True, level=-1):
+        dtype_to_df = {}
+
+        for dtype, spore in self.dtype_to_spore.items():
+            if use_integrated:
+                assert self.integrated_clusters is not None, 'Must generate integrated volume first'
+                input_clusters = [c for c, (sid, dtype) in zip(self.integrated_clusters, self.section_ids) if dtype==dtype]
+                dtype_to_df[dtype] = spore.get_cluster_intensities(use_predicted=use_predicted, level=level, input_clusters=input_clusters)[dtype]
+            else:
+                dtype_to_df[dtype] = spore.get_cluster_intensities(use_predicted=use_predicted, level=level)[dtype]
+
+        return dtype_to_df
+
+    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, integrate=True, dist_thresh=.5, n_iterations=10, resolution=2.):
+        dtypes, spores = zip(*self.dtype_to_spore.items())
+        if self.integrated_clusters is None:
+            self.integrated_clusters = [None for i in range(len(next(iter(self.dtype_to_spore.values())).clusters))]
+
+        section_positions = []
+        sids = []
+        for spore in spores:
+            section_positions += [entry['position'] for entry in spore.sections]
+            sids += spore.section_ids
+        section_positions, sids = zip(*sorted([(p, tup) for p, tup in zip(section_positions, sids)], key=lambda x: x[0]))
+
+        section_positions = (np.asarray(section_positions) * z_scaler).astype(int)
+        for i, (val, (ident, dtype)) in enumerate(zip(section_positions, sids)):
+            if i > 0:
+                old = section_positions[i-1]
+                old_ident = sids[i-1][0]
+                if old == val and old_ident != ident:
+                    section_positions[i:] = section_positions[i:] + 1
+
+        start, stop = section_positions[0], section_positions[-1]
+        dtype_to_volume = {}
+        for dtype, spore in zip(dtypes, spores):
+            logging.info(f'generating volume for {dtype} spore')
+            positions = [p for p, (_, dt) in zip(section_positions, sids) if dt==dtype]
+            clusters = spore.clusters[level].copy()
+            if positions[0] != start:
+                positions.insert(0, start)
+                clusters = np.concatenate((clusters[:1], clusters))
+            if positions[-1] != stop:
+                positions.append(stop)
+                clusters = np.concatenate((clusters, clusters[-1:]))
+            volume = utils.get_interpolated_volume(clusters, positions)
+            dtype_to_volume[dtype] = volume
+
+        if integrate:
+            logging.info(f'generating integrated volume')
+            dtype_to_cluster_intensities = self.calculate_cluster_intensities(level=level)
+            integrated = integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, dist_thresh=dist_thresh, n_iterations=n_iterations, resolution=resolution)
+            logging.info(f'finished integration, found {integrated.max()} clusters')
+            dtype_to_volume['integrated'] = integrated
+            self.integrated_clusters[level] = np.stack([integrated[i] for i in section_positions])
+
+        self.dtype_to_volume = dtype_to_volume
+        return dtype_to_volume
+
+    def display_predicted_pixels(self, dtype, channel, level=-1, figsize=None):
+        spore = self.dtype_to_spore[dtype]
+        return spore.display_predicted_pixels(channel, dtype, level=level, figsize=figsize)
+    
+    def display_cluster_probs(self, dtype, level=-1):
+        spore = self.dtype_to_spore[dtype]
+        return spore.display_cluster_probs(level=level)
+
+    def display_clusters(self, dtype, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True):
+        if dtype == 'integrated':
+            clusters = self.integrated_clusters[level]
+        else:
+            clusters = self.dtype_to_spore[dtype].clusters[level]
+
+        vis_utils.display_clusters(
+            clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices)
+        
+    def display_volumes(self, dtype_to_volume=None, figsize=None):
+        if dtype_to_volume is None:
+            assert self.dtype_to_volume is not None, f'need to run generate_interpolated_volumes first'
+            dtype_to_volume = self.dtype_to_volume
+
+        dtypes, volumes = zip(*dtype_to_volume.items())
+        if figsize is None:
+            figsize = (len(volumes), volumes[0].shape[0])
+
+        fig, axs = plt.subplots(nrows=volumes[0].shape[0], ncols=len(volumes), figsize=figsize)
+        for i in range(volumes[0].shape[0]):
+            for j, volume in enumerate(volumes):
+                ax = axs[i, j]
+                rgb = vis_utils.display_labeled_as_rgb(volume[i], preserve_indices=True)
+                ax.imshow(rgb)
+                ax.axis('off')
+
+                if i==0:
+                    ax.set_title(dtypes[j])
+        return axs
+        
+    def assign_pts(self, pts, section_id, level=-1, scale=True):
+        """
+        pts are (x, y)
+        """
+        dtype = section_id[1] if dtype is None else dtype
+        spore = self.dtype_to_spore[dtype]
+
+        if scale:
+            scaler = spore.input_ppm / spore.target_ppm
+            pts = pts / scaler
+            pts = pts.astype(int)
+
+        if dtype == 'integrated':
+            section_idx = self.section_ids.index(section_id)            
+            nbhds = self.integrated_clusters[level][section_idx]
+        else:
+            section_idx = spore.section_ids.index(section_id)            
+            nbhds = spore.clusters[level][section_idx]
+            
+        max_h, max_w = nbhds.shape[0] - 1, nbhds.shape[1] - 1
+
+        pts[pts[:, 0] > max_w, 0] = max_w
+        pts[pts[:, 1] > max_h, 1] = max_h
+
+        labels = nbhds[pts[:, 1], pts[:, 0]]
+
+        return labels
+    
+
+
+
+class Spore(object):
     def __init__(
             self,
             sections,
@@ -65,7 +336,7 @@ class Mushroom(object):
             self.learner_data.inference_ds, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=construct_inference_batch
         )
 
-        self.model = LitMushroom(
+        self.model = LitSpore(
             self.sae_args,
             self.learner_data,
             lr=self.trainer_kwargs['lr'],
@@ -90,9 +361,7 @@ class Mushroom(object):
             })
 
             logging_callback = WandbImageCallback(
-                logger, self.learner_data, self.inference_dl,
-                channel=self.trainer_kwargs['logger_channel']
-            )
+                logger, self.learner_data, self.inference_dl)
             callbacks.append(logging_callback)
 
         else:
@@ -118,60 +387,25 @@ class Mushroom(object):
 
 
     @staticmethod
-    def from_config(mushroom_config, chkpt_filepath=None, accelerator=None):
-        if isinstance(mushroom_config, str):
-            mushroom_config = yaml.safe_load(open(mushroom_config))
+    def from_config(config, chkpt_filepath=None, accelerator=None):
+        if isinstance(config, str):
+            config = yaml.safe_load(open(config))
 
         if accelerator is not None:
-            mushroom_config['trainer_kwargs']['accelerator'] = 'cpu'
+            config['trainer_kwargs']['accelerator'] = 'cpu'
 
-        mushroom = Mushroom(
-            mushroom_config['sections'],
-            sae_kwargs=mushroom_config['sae_kwargs'],
-            trainer_kwargs=mushroom_config['trainer_kwargs'],
+        spore = Spore(
+            config['sections'],
+            sae_kwargs=config['sae_kwargs'],
+            trainer_kwargs=config['trainer_kwargs'],
         )
 
         if chkpt_filepath is not None:
             logging.info(f'loading checkpoint: {chkpt_filepath}')
             state_dict = torch.load(chkpt_filepath)['state_dict']
-            mushroom.model.load_state_dict(state_dict)
+            spore.model.load_state_dict(state_dict)
 
-        return mushroom
-    
-    @staticmethod
-    def generate_multi_interpolated_volume(mushrooms, z_scaler=.1, level=-1):
-        dtypes = [m.dtypes[0] for m in mushrooms]
-
-        section_positions = []
-        sids = []
-        for obj in mushrooms:
-            section_positions += [entry['position'] for entry in obj.sections]
-            sids += obj.section_ids
-        section_positions, sids = zip(*sorted([(p, tup) for p, tup in zip(section_positions, sids)], key=lambda x: x[0]))
-
-        section_positions = (np.asarray(section_positions) * z_scaler).astype(int)
-        for i, (val, (ident, dtype)) in enumerate(zip(section_positions, sids)):
-            if i > 0:
-                old = section_positions[i-1]
-                old_ident = sids[i-1][0]
-                if old == val and old_ident != ident:
-                    section_positions[i:] = section_positions[i:] + 1
-
-        start, stop = section_positions[0], section_positions[-1]
-        volumes = []
-        for dtype, mushroom in zip(dtypes, mushrooms):
-            positions = [p for p, (_, dt) in zip(section_positions, sids) if dt==dtype]
-            clusters = mushroom.clusters[level].copy()
-            if positions[0] != start:
-                positions.insert(0, start)
-                clusters = np.concatenate((clusters[:1], clusters))
-            if positions[-1] != stop:
-                positions.append(stop)
-                clusters = np.concatenate((clusters, clusters[-1:]))
-            volume = utils.get_interpolated_volume(clusters, positions)
-            volumes.append(volume)
-        return volumes
-
+        return spore
     
     def initialize_trainer(
             self,
@@ -202,12 +436,15 @@ class Mushroom(object):
         self.agg_clusters = [x.cpu().clone().detach().numpy().astype(int) for x in formatted['agg_clusters']]
         self.cluster_probs = [x.cpu().clone().detach().numpy() for x in formatted['cluster_probs']]
 
-    def get_cluster_intensities(self, use_predicted=True, level=-1):
+    def get_cluster_intensities(self, use_predicted=True, level=-1, input_clusters=None):
+        if input_clusters is None:
+            input_clusters = self.clusters
+        
         dtype_to_df = {}
         imgs = self.predicted_pixels[level] if use_predicted else self.true_pixels
         for dtype in self.dtypes:
             sections, clusters = [], []
-            for (sid, dt), img, labeled in zip(self.section_ids, imgs, self.clusters[level]):
+            for (sid, dt), img, labeled in zip(self.section_ids, imgs, input_clusters[level]):
                 if dt == dtype:
                     sections.append(img)
                     clusters.append(labeled)
@@ -280,6 +517,7 @@ class Mushroom(object):
                 ax.set_yticks([])
                 ax.set_xticks([])
                 if c == 0: ax.set_ylabel(r, rotation=90)
+        return axs
 
     def display_clusters(self, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True):
         vis_utils.display_clusters(
@@ -306,8 +544,3 @@ class Mushroom(object):
         labels = nbhds[pts[:, 1], pts[:, 0]]
 
         return labels
-
-
-        
-
-

@@ -22,11 +22,10 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 
 
 class WandbImageCallback(Callback):
-    def __init__(self, wandb_logger, learner_data, inference_dl, channel=None):
+    def __init__(self, wandb_logger, learner_data, inference_dl):
         self.logger = wandb_logger
         self.inference_dl = inference_dl
         self.learner_data = learner_data
-        # self.channel = channel if channel is not None else self.learner_data.channels[0]
         self.channel = 0
 
 
@@ -87,7 +86,7 @@ class VariableTrainingCallback(Callback):
                 # pl_module.sae.end_pretraining()
 
 
-class LitMushroom(LightningModule):
+class LitSpore(LightningModule):
     def __init__(
             self,
             sae_args,
