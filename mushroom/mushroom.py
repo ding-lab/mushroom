@@ -435,6 +435,7 @@ class Spore(object):
         self.clusters = [x for x in formatted['clusters']]
         self.agg_clusters = [x.cpu().clone().detach().numpy().astype(int) for x in formatted['agg_clusters']]
         self.cluster_probs = [x.cpu().clone().detach().numpy() for x in formatted['cluster_probs']]
+        self.cluster_to_agg = [x for x in formatted['label_to_original']]
 
     def get_cluster_intensities(self, use_predicted=True, level=-1, input_clusters=None):
         if input_clusters is None:

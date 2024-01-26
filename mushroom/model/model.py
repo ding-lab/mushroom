@@ -217,7 +217,7 @@ class LitSpore(LightningModule):
                 flat['true_pixels'], i
             ) for i in range(len(ds.section_ids))]
         
-        relabeled_clusters = [utils.label_agg_clusters(clusters[:i + 1]) for i in range(len(clusters))]
+        relabeled_clusters, label_to_orig = zip(*[utils.label_agg_clusters(clusters[:i + 1]) for i in range(len(clusters))])
 
         return {
             'predicted_pixels': pred_pixels, # nested list of (h, w, c), length num levels, length num sections
@@ -225,6 +225,7 @@ class LitSpore(LightningModule):
             'clusters': relabeled_clusters, # list of (n, h, w), length num levels
             'cluster_probs': cluster_probs, # list of (n, h, w, n_clusters), length num levels
             'agg_clusters': clusters, # list of (n h w), length num levels
+            'label_to_original': label_to_orig # maps labels to original cluster levels
         }
 
     def forward(self, tiles, slides, dtypes, pairs=None, is_anchor=None):

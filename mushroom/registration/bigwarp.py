@@ -25,7 +25,7 @@ def read_bigwarp_warp_field(fp, downsample_scaler):
     return ddf
 
 
-def warp_image(moving, ddf):
+def warp_image(moving, ddf, fill_type='min'):
     """
     assumes 2d transform
     
@@ -54,7 +54,11 @@ def warp_image(moving, ddf):
     w_idxs[w_idxs>= moving.shape[-1]] = 0
 
     warped = moving[..., h_idxs, w_idxs]
-    warped[..., mask.sum(0)<2] = 0
+
+    if fill_type == 'min':
+        warped[..., mask.sum(0)<2] = 0
+    else:
+        warped[..., mask.sum(0)<2] = moving.max()
     
     return warped
 
@@ -128,12 +132,12 @@ def register_visium(to_transform, ddf):
         rearrange(lowres, 'h w c -> c h w'), (int(lowres_scale * lowres.shape[0]), int(lowres_scale * lowres.shape[1])), antialias=True,
     )
 
-    warped_hires = warp_image(hires, ddf)
+    warped_hires = warp_image(hires, ddf, fill_type='max')
     scaled_warped_hires = TF.resize(warped_hires, (int(scalefactors['tissue_hires_scalef'] * warped_hires.shape[-2]), int(scalefactors['tissue_hires_scalef'] * warped_hires.shape[-1])), antialias=True)
     scaled_warped_hires = rearrange(scaled_warped_hires, 'c h w -> h w c').numpy()
     d['images']['hires'] = scaled_warped_hires / scaled_warped_hires.max() # numpy conversion has slight overflow issue
 
-    warped_lowres = warp_image(lowres, ddf)
+    warped_lowres = warp_image(lowres, ddf, , fill_type='max')
     scaled_warped_lowres = TF.resize(warped_lowres, (int(scalefactors['tissue_lowres_scalef'] * warped_lowres.shape[-2]), int(scalefactors['tissue_lowres_scalef'] * warped_lowres.shape[-1])), antialias=True)
     scaled_warped_lowres = rearrange(scaled_warped_lowres, 'c h w -> h w c').numpy()
     d['images']['lowres'] = scaled_warped_lowres / scaled_warped_lowres.max() # numpy conversion has slight overflow issue
@@ -262,7 +266,7 @@ def register_xenium(adata, ddf):
     return new
 
 def register_he(he, ddf):
-    return warp_image(he, ddf)
+    return warp_image(he, ddf, fill_type='max')
 
 def register_multiplex(data, ddf):
     if isinstance(data, dict):
