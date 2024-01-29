@@ -132,12 +132,15 @@ class Mushroom(object):
             'trainer_kwargs': self.trainer_kwargs
         }
 
-        # clusters
+        # clusters and cluster probs
         dtype_to_clusters = {
             'integrated': self.integrated_clusters,
         }
+        dtype_to_cluster_probs, dtype_to_cluster_probs_all = {}, {}
         for dtype, spore in self.dtype_to_spore.items():
             dtype_to_clusters[dtype] = spore.clusters
+            dtype_to_cluster_probs = spore.cluster_probs
+            dtype_to_cluster_probs_all = spore.cluster_probs_all
 
         # cluster intensities
         dtype_to_cluster_intensities = {
@@ -155,6 +158,8 @@ class Mushroom(object):
         outputs = {
             'dtype_to_volume': self.dtype_to_volume,
             'dtype_to_clusters': dtype_to_clusters,
+            'dtype_to_cluster_probs': dtype_to_cluster_probs,
+            'dtype_to_cluster_probs_all': dtype_to_cluster_probs_all,
             'dtype_to_cluster_intensities': dtype_to_cluster_intensities,
         }
 
@@ -230,20 +235,23 @@ class Mushroom(object):
         spore = self.dtype_to_spore[dtype]
         return spore.display_predicted_pixels(channel, dtype, level=level, figsize=figsize)
     
-    def display_cluster_probs(self, dtype, level=-1):
-        spore = self.dtype_to_spore[dtype]
-        return spore.display_cluster_probs(level=level)
+    def display_cluster_probs(self, dtype, level=-1, return_axs=False):
+        if dtype == 'integrated':
+            raise RuntimeError(f'Probabilities are not caclulated for integrated clusters')
+        else:
+            spore = self.dtype_to_spore[dtype]
+            return spore.display_cluster_probs(level=level, return_axs=return_axs)
 
-    def display_clusters(self, dtype, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True):
+    def display_clusters(self, dtype, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True, return_axs=False):
         if dtype == 'integrated':
             clusters = self.integrated_clusters[level]
         else:
             clusters = self.dtype_to_spore[dtype].clusters[level]
 
         vis_utils.display_clusters(
-            clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices)
+            clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
         
-    def display_volumes(self, dtype_to_volume=None, figsize=None):
+    def display_volumes(self, dtype_to_volume=None, figsize=None, return_axs=False):
         if dtype_to_volume is None:
             assert self.dtype_to_volume is not None, f'need to run generate_interpolated_volumes first'
             dtype_to_volume = self.dtype_to_volume
@@ -262,7 +270,8 @@ class Mushroom(object):
 
                 if i==0:
                     ax.set_title(dtypes[j])
-        return axs
+        if return_axs:
+            return axs
         
     def assign_pts(self, pts, section_id, level=-1, scale=True):
         """
@@ -291,8 +300,6 @@ class Mushroom(object):
         labels = nbhds[pts[:, 1], pts[:, 0]]
 
         return labels
-    
-
 
 
 class Spore(object):
@@ -383,7 +390,9 @@ class Spore(object):
             
         self.predicted_pixels, self.scaled_predicted_pixels = None, None
         self.true_pixels, self.scaled_true_pixels = None, None
-        self.clusters, self.agg_clusters, self.cluster_probs = None, None, None
+        self.clusters, self.agg_clusters, self.cluster_probs_agg = None, None, None
+        self.cluster_probs, self.cluster_probs_all = None, None
+        self.cluster_to_agg = None
 
 
     @staticmethod
@@ -406,6 +415,59 @@ class Spore(object):
             spore.model.load_state_dict(state_dict)
 
         return spore
+    
+    def _calculate_probs(self):
+        n_levels = len(self.clusters)
+        # probs for all clusters
+        level_to_probs_all = []
+        for level in range(n_levels):
+            chars = utils.CHARS[:level + 1]
+            ein_exp = ','.join([f'nhw{x}' for x in chars])
+            ein_exp += f'->nhw{chars}'
+            probs = np.einsum(ein_exp, *self.cluster_probs_agg[:level + 1])
+            
+            if level:
+                new_probs = np.zeros_like(probs)
+                for label, cluster in self.cluster_to_agg[level].items():
+                    mask = self.clusters[level]==label
+                    values = probs[mask] # (n, z)
+                    empty = np.zeros_like(values)
+
+                    selections = tuple([slice(None)] + list(cluster)[:-1])
+                    empty[selections] = values[selections]
+                    new_probs[mask] = empty
+            else:
+                new_probs = probs
+
+            level_to_probs_all.append(new_probs)
+
+        # probs for labeled clusters only
+        level_to_probs = []
+        for level in range(n_levels):
+            probs = level_to_probs_all[level]
+            
+            if level:
+                labeled_probs = np.zeros((probs.shape[0], probs.shape[1], probs.shape[2], len(self.cluster_to_agg[level])))
+                for label, cluster in self.cluster_to_agg[level].items():
+                    mask = self.clusters[level]==label
+                    values = probs[mask] # (n, a, b, c)
+
+                    window = labeled_probs[mask]
+                    labels, cs = zip(*[(l, c) for l, c in self.cluster_to_agg[level].items()
+                                       if list(c)[:-1] == list(cluster)[:-1]])
+                    cs = np.asarray(cs)
+                    tups = [tuple(cs[:, i]) for i in range(cs.shape[1])]
+
+                    selections = tuple([slice(None)] + tups)
+                    window[:, labels] = values[selections]
+                    labeled_probs[mask] = window
+            else:
+                labeled_probs = probs
+            
+            level_to_probs.append(labeled_probs)
+
+        return level_to_probs, level_to_probs_all
+
     
     def initialize_trainer(
             self,
@@ -434,8 +496,10 @@ class Spore(object):
         self.true_pixels = [x.cpu().clone().detach().numpy() for x in formatted['true_pixels']]
         self.clusters = [x for x in formatted['clusters']]
         self.agg_clusters = [x.cpu().clone().detach().numpy().astype(int) for x in formatted['agg_clusters']]
-        self.cluster_probs = [x.cpu().clone().detach().numpy() for x in formatted['cluster_probs']]
+        self.cluster_probs_agg = [x.cpu().clone().detach().numpy() for x in formatted['cluster_probs']]
         self.cluster_to_agg = [x for x in formatted['label_to_original']]
+
+        self.cluster_probs, self.cluster_probs_all = self._calculate_probs()
 
     def get_cluster_intensities(self, use_predicted=True, level=-1, input_clusters=None):
         if input_clusters is None:
@@ -469,12 +533,11 @@ class Spore(object):
                 old = section_positions[i-1]
                 if old == val:
                     section_positions[i:] = section_positions[i:] + 1
-        print(section_positions)
     
         cluster_volume = utils.get_interpolated_volume(self.clusters[level], section_positions)
         return cluster_volume
 
-    def display_predicted_pixels(self, channel, dtype, level=-1, figsize=None):
+    def display_predicted_pixels(self, channel, dtype, level=-1, figsize=None, return_axs=False):
         if self.predicted_pixels is None:
             raise RuntimeError(
                 'Must train model and embed sections before displaying. To embed run .embed_sections()')
@@ -502,10 +565,15 @@ class Spore(object):
         axs[0, 0].set_ylabel('predicted')
         axs[1, 0].set_ylabel('true')
 
-        return axs
+        if return_axs:
+            return axs
     
-    def display_cluster_probs(self, level=-1):
-        cluster_probs = self.cluster_probs[level]
+    def display_cluster_probs(self, level=-1, prob_type='clusters', return_axs=False):
+
+        if prob_type == 'clusters_agg':
+            cluster_probs = self.cluster_probs_agg[level]
+        else:
+            cluster_probs = self.cluster_probs[level]
         fig, axs = plt.subplots(
             nrows=cluster_probs.shape[-1],
             ncols=cluster_probs.shape[0],
@@ -518,7 +586,9 @@ class Spore(object):
                 ax.set_yticks([])
                 ax.set_xticks([])
                 if c == 0: ax.set_ylabel(r, rotation=90)
-        return axs
+        
+        if return_axs:
+            return axs
 
     def display_clusters(self, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True):
         vis_utils.display_clusters(

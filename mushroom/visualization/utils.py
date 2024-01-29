@@ -137,7 +137,7 @@ def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=False):
     return new
 
 
-def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserve_indices=False):
+def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserve_indices=False, return_axs=False):
     if figsize is None:
         figsize = (clusters.shape[0] * 2, 5)
         if not horizontal:
@@ -160,6 +160,9 @@ def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserv
 
     display_legend(np.unique(clusters), cmap, ax=axs[-1])
     axs[-1].axis('off')
+
+    if return_axs:
+        return axs
 
 
 
