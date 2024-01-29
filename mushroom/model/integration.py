@@ -75,9 +75,9 @@ def merge_volumes(volumes, are_probs=False, kernel=None):
     
     return relabeled.numpy(), values.numpy(), label_to_cluster
 
-def integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, dist_thresh=.5, n_iterations=10, resolution=1.):
+def integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=False, dist_thresh=.5, n_iterations=10, resolution=1.):
     dtypes, volumes = zip(*dtype_to_volume.items())
-    labeled, _, label_to_cluster = merge_volumes(volumes)
+    labeled, _, label_to_cluster = merge_volumes(volumes, are_probs=are_probs)
 
     dtype_to_cluster_dists = {}
     for dtype, df in dtype_to_cluster_intensities.items():

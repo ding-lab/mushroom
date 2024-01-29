@@ -65,7 +65,7 @@ class Mushroom(object):
             self.dtype_to_spore[dtype] = spore
 
         self.integrated_clusters = None
-        self.dtype_to_volume = None
+        self.dtype_to_volume, self.dtype_to_volume_probs = None, None
 
     @staticmethod
     def from_config(mushroom_config, accelerator=None):
@@ -157,6 +157,7 @@ class Mushroom(object):
 
         outputs = {
             'dtype_to_volume': self.dtype_to_volume,
+            'dtype_to_volume_probs': self.dtype_to_volume_probs,
             'dtype_to_clusters': dtype_to_clusters,
             'dtype_to_cluster_probs': dtype_to_cluster_probs,
             'dtype_to_cluster_probs_all': dtype_to_cluster_probs_all,
@@ -185,7 +186,7 @@ class Mushroom(object):
 
         return dtype_to_df
 
-    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, integrate=True, dist_thresh=.5, n_iterations=10, resolution=2.):
+    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=False, integrate=True, dist_thresh=.5, n_iterations=10, resolution=2.):
         dtypes, spores = zip(*self.dtype_to_spore.items())
         if self.integrated_clusters is None:
             self.integrated_clusters = [None for i in range(len(next(iter(self.dtype_to_spore.values())).clusters))]
@@ -210,25 +211,39 @@ class Mushroom(object):
         for dtype, spore in zip(dtypes, spores):
             logging.info(f'generating volume for {dtype} spore')
             positions = [p for p, (_, dt) in zip(section_positions, sids) if dt==dtype]
-            clusters = spore.clusters[level].copy()
+
+            if use_probs:
+                clusters = spore.cluster_probs[level].copy()
+            else:
+                clusters = spore.clusters[level].copy()
+
             if positions[0] != start:
                 positions.insert(0, start)
                 clusters = np.concatenate((clusters[:1], clusters))
             if positions[-1] != stop:
                 positions.append(stop)
                 clusters = np.concatenate((clusters, clusters[-1:]))
-            volume = utils.get_interpolated_volume(clusters, positions)
+
+            if use_probs:
+                clusters = rearrange(clusters, 'n h w c -> c n h w')
+                volume = utils.get_interpolated_volume(clusters, positions, method='linear')
+                volume = rearrange(volume, 'c n h w -> n h w c')
+            else:
+                volume = utils.get_interpolated_volume(clusters, positions)
             dtype_to_volume[dtype] = volume
 
         if integrate:
             logging.info(f'generating integrated volume')
             dtype_to_cluster_intensities = self.calculate_cluster_intensities(level=level)
-            integrated = integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, dist_thresh=dist_thresh, n_iterations=n_iterations, resolution=resolution)
+            integrated = integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=use_probs, dist_thresh=dist_thresh, n_iterations=n_iterations, resolution=resolution)
             logging.info(f'finished integration, found {integrated.max()} clusters')
             dtype_to_volume['integrated'] = integrated
             self.integrated_clusters[level] = np.stack([integrated[i] for i in section_positions])
 
-        self.dtype_to_volume = dtype_to_volume
+        if use_probs:
+            self.dtype_to_volume_probs = dtype_to_volume
+        else:
+            self.dtype_to_volume = dtype_to_volume
         return dtype_to_volume
 
     def display_predicted_pixels(self, dtype, channel, level=-1, figsize=None):
@@ -251,16 +266,19 @@ class Mushroom(object):
         vis_utils.display_clusters(
             clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
         
-    def display_volumes(self, dtype_to_volume=None, figsize=None, return_axs=False):
+    def display_volumes(self, dtype_to_volume=None, figsize=None, return_axs=False, with_probs=False):
         if dtype_to_volume is None:
-            assert self.dtype_to_volume is not None, f'need to run generate_interpolated_volumes first'
+            assert self.dtype_to_volume is not None, f'need to run generate_interpolated_volumes first with use_probs=False'
             dtype_to_volume = self.dtype_to_volume
+        if with_probs:
+            assert self.dtype_to_volume_probs is not None, f'need to run generate_interpolated_volumes twice, with use_probs=False and use_probs=True'
 
         dtypes, volumes = zip(*dtype_to_volume.items())
-        if figsize is None:
-            figsize = (len(volumes), volumes[0].shape[0])
 
-        fig, axs = plt.subplots(nrows=volumes[0].shape[0], ncols=len(volumes), figsize=figsize)
+        ncols = len(volumes) if not with_probs else len(volumes) + 1
+        if figsize is None:
+            figsize = (ncols, volumes[0].shape[0])
+        fig, axs = plt.subplots(nrows=volumes[0].shape[0], ncols=ncols, figsize=figsize)
         for i in range(volumes[0].shape[0]):
             for j, volume in enumerate(volumes):
                 ax = axs[i, j]
@@ -270,6 +288,16 @@ class Mushroom(object):
 
                 if i==0:
                     ax.set_title(dtypes[j])
+        if with_probs:
+            for i in range(volumes[0].shape[0]):
+                ax = axs[i, -1]
+                rgb = vis_utils.display_labeled_as_rgb(self.dtype_to_volume_probs['integrated'][i], preserve_indices=True)
+                ax.imshow(rgb)
+                ax.axis('off')
+                if i==0:
+                    ax.set_title('integrated (probs)')
+
+
         if return_axs:
             return axs
         
@@ -525,7 +553,7 @@ class Spore(object):
         return dtype_to_df
 
 
-    def generate_interpolated_volume(self, z_scaler=.1, level=-1):
+    def generate_interpolated_volume(self, z_scaler=.1, level=-1, use_probs=False):
         section_positions = [entry['position'] for entry in self.sections]
         section_positions = (np.asarray(section_positions) * z_scaler).astype(int)
         for i, val in enumerate(section_positions):
@@ -533,9 +561,14 @@ class Spore(object):
                 old = section_positions[i-1]
                 if old == val:
                     section_positions[i:] = section_positions[i:] + 1
-    
-        cluster_volume = utils.get_interpolated_volume(self.clusters[level], section_positions)
-        return cluster_volume
+
+        if use_probs:
+            probs = rearrange(self.cluster_probs[level], 'n h w c -> c n h w')
+            volume = utils.get_interpolated_volume(probs, section_positions, method='linear')
+            volume = rearrange(volume, 'c n h w -> n h w c')
+        else:
+            volume = utils.get_interpolated_volume(self.clusters[level], section_positions, method='label_gaussian')
+        return volume
 
     def display_predicted_pixels(self, channel, dtype, level=-1, figsize=None, return_axs=False):
         if self.predicted_pixels is None:
@@ -590,9 +623,9 @@ class Spore(object):
         if return_axs:
             return axs
 
-    def display_clusters(self, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True):
+    def display_clusters(self, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True, return_axs=False):
         vis_utils.display_clusters(
-            self.clusters[level], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices)
+            self.clusters[level], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
         
     def assign_pts(self, pts, section_id=None, section_idx=None, level=-1, scale=True):
         """
