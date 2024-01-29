@@ -186,7 +186,7 @@ class Mushroom(object):
 
         return dtype_to_df
 
-    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=False, integrate=True, dist_thresh=.5, n_iterations=10, resolution=2.):
+    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=False, integrate=True, dist_thresh=.5, n_iterations=10, resolution=2., dtype_to_weight=None):
         dtypes, spores = zip(*self.dtype_to_spore.items())
         if self.integrated_clusters is None:
             self.integrated_clusters = [None for i in range(len(next(iter(self.dtype_to_spore.values())).clusters))]
@@ -235,13 +235,15 @@ class Mushroom(object):
         if integrate:
             logging.info(f'generating integrated volume')
             dtype_to_cluster_intensities = self.calculate_cluster_intensities(level=level)
-            integrated = integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=use_probs, dist_thresh=dist_thresh, n_iterations=n_iterations, resolution=resolution)
+            integrated = integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=use_probs, dist_thresh=dist_thresh, n_iterations=n_iterations, resolution=resolution, dtype_to_weight=dtype_to_weight)
             logging.info(f'finished integration, found {integrated.max()} clusters')
             dtype_to_volume['integrated'] = integrated
             self.integrated_clusters[level] = np.stack([integrated[i] for i in section_positions])
 
         if use_probs:
             self.dtype_to_volume_probs = dtype_to_volume
+            self.dtype_to_volume = {dtype:probs.argmax(-1) if dtype!='integrated' else probs
+                                    for dtype, probs in self.dtype_to_volume_probs.items()}
         else:
             self.dtype_to_volume = dtype_to_volume
         return dtype_to_volume
@@ -257,25 +259,32 @@ class Mushroom(object):
             spore = self.dtype_to_spore[dtype]
             return spore.display_cluster_probs(level=level, return_axs=return_axs)
 
-    def display_clusters(self, dtype, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True, return_axs=False):
+    def display_clusters(self, dtype, level=-1, section_idxs=None, section_ids=None, cmap=None, figsize=None, horizontal=True, preserve_indices=True, return_axs=False):
         if dtype == 'integrated':
             clusters = self.integrated_clusters[level]
         else:
             clusters = self.dtype_to_spore[dtype].clusters[level]
 
-        vis_utils.display_clusters(
-            clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
+        if section_ids is None and section_idxs is None:
+            return vis_utils.display_clusters(
+                clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
+        else:
+            if section_idxs is None:
+                section_idxs = [i for i, sid in enumerate(self.section_ids) if sid in section_ids]
+            return vis_utils.display_clusters(
+                clusters[section_idxs], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
         
-    def display_volumes(self, dtype_to_volume=None, figsize=None, return_axs=False, with_probs=False):
+    def display_volumes(self, positions=None, dtype_to_volume=None, figsize=None, return_axs=False):
         if dtype_to_volume is None:
-            assert self.dtype_to_volume is not None, f'need to run generate_interpolated_volumes first with use_probs=False'
+            assert self.dtype_to_volume is not None, f'need to run generate_interpolated_volumes first'
             dtype_to_volume = self.dtype_to_volume
-        if with_probs:
-            assert self.dtype_to_volume_probs is not None, f'need to run generate_interpolated_volumes twice, with use_probs=False and use_probs=True'
 
         dtypes, volumes = zip(*dtype_to_volume.items())
 
-        ncols = len(volumes) if not with_probs else len(volumes) + 1
+        if positions is not None:
+            volumes = [v[positions] for v in volumes]
+
+        ncols = len(volumes)
         if figsize is None:
             figsize = (ncols, volumes[0].shape[0])
         fig, axs = plt.subplots(nrows=volumes[0].shape[0], ncols=ncols, figsize=figsize)
@@ -288,15 +297,6 @@ class Mushroom(object):
 
                 if i==0:
                     ax.set_title(dtypes[j])
-        if with_probs:
-            for i in range(volumes[0].shape[0]):
-                ax = axs[i, -1]
-                rgb = vis_utils.display_labeled_as_rgb(self.dtype_to_volume_probs['integrated'][i], preserve_indices=True)
-                ax.imshow(rgb)
-                ax.axis('off')
-                if i==0:
-                    ax.set_title('integrated (probs)')
-
 
         if return_axs:
             return axs
@@ -623,9 +623,15 @@ class Spore(object):
         if return_axs:
             return axs
 
-    def display_clusters(self, level=-1, cmap=None, figsize=None, horizontal=True, preserve_indices=True, return_axs=False):
-        vis_utils.display_clusters(
-            self.clusters[level], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
+    def display_clusters(self, level=-1, section_idxs=None, section_ids=None, cmap=None, figsize=None, horizontal=True, preserve_indices=True, return_axs=False):
+        if section_ids is None and section_idxs is None:
+            return vis_utils.display_clusters(
+                self.clusters[level], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
+        else:
+            if section_idxs is None:
+                section_idxs = [i for i, sid in enumerate(self.section_ids) if sid in section_ids]
+            return vis_utils.display_clusters(
+                self.clusters[level][section_idxs], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
         
     def assign_pts(self, pts, section_id=None, section_idx=None, level=-1, scale=True):
         """

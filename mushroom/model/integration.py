@@ -75,16 +75,25 @@ def merge_volumes(volumes, are_probs=False, kernel=None):
     
     return relabeled.numpy(), values.numpy(), label_to_cluster
 
-def integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=False, dist_thresh=.5, n_iterations=10, resolution=1.):
+def integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=False, dist_thresh=.5, n_iterations=10, resolution=1., dtype_to_weight=None):
     dtypes, volumes = zip(*dtype_to_volume.items())
     labeled, _, label_to_cluster = merge_volumes(volumes, are_probs=are_probs)
+
+    if dtype_to_weight is not None:
+        # make sure dist_thresh will still work
+        maximum = np.max(list(dtype_to_weight.values()))
+        dtype_to_weight = {k:v / maximum for k, v in dtype_to_weight.items()}
+        total = np.sum(list(dtype_to_weight.values()))
+        scaler = len(dtype_to_weight) / total
+        dtype_to_weight = {k:v * scaler for k, v in dtype_to_weight.items()}
 
     dtype_to_cluster_dists = {}
     for dtype, df in dtype_to_cluster_intensities.items():
         data = torch.cdist(torch.tensor(df.values), torch.tensor(df.values)).numpy()
         data /= data.std()
+        data *= dtype_to_weight[dtype] if dtype_to_weight is not None else 1.
         dtype_to_cluster_dists[dtype] = data
-    
+
     edges, weights = [], []
     for label_a in range(labeled.max()):
         cluster_a = label_to_cluster[label_a]
