@@ -4,12 +4,17 @@ import re
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from torchio.transforms import Resize
 from einops import rearrange
 from sklearn.cluster import AgglomerativeClustering
 
 CHARS = 'abcdefghijklmnopqrstuvwxyz'
+
+DEFAULT_KERNEL = torch.full((5,5,5), .1)
+DEFAULT_KERNEL[1:-1, 1:-1, 1:-1] = .25
+DEFAULT_KERNEL[2, 2, 2] = 1.
 
 def listfiles(folder, regex=None):
     """Return all files with the given regex in the given folder structure"""
@@ -20,6 +25,40 @@ def listfiles(folder, regex=None):
             elif re.findall(regex, os.path.join(root, filename)):
                 yield os.path.join(root, filename)
 
+def smooth_probabilities(probs, kernel=None):
+    """
+    probs - (n h w labels)
+    kernel - (k, k, k) where k is kernel size
+    """
+    if kernel is None:
+        kernel = DEFAULT_KERNEL
+
+    is_numpy = isinstance(probs, np.ndarray)
+    if is_numpy:
+        probs = torch.tensor(probs)
+
+    stamp = rearrange(kernel, '... -> 1 1 1 1 ...')
+    convs = []
+    for prob in probs:
+        # pad so we end up with the right shape
+        kernel_size = kernel.shape[0]
+        pad = tuple([kernel_size // 2 for i in range(6)])
+        prob = rearrange(
+            F.pad(rearrange(prob, 'n h w c -> c n h w'), pad=pad, mode='replicate'),
+            'c n h w -> n h w c'
+        )
+
+        prob = prob.unfold(0, kernel_size, 1)
+        prob = prob.unfold(1, kernel_size, 1)
+        prob = prob.unfold(2, kernel_size, 1)
+        out = (prob * stamp).sum(dim=(-3, -2, -1))
+        out /= out.max()
+
+        if is_numpy:
+            out = out.numpy()
+
+        convs.append(out)
+    return convs
 
 def get_interpolated_volume(stacked, section_positions, method='label_gaussian'):
     """

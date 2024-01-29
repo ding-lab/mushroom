@@ -25,37 +25,18 @@ def relabel_merged_volume(merged):
     return new, label_to_cluster
 
 def merge_volumes(volumes, are_probs=False, kernel=None):
-    if kernel is None:
-        kernel = torch.full((3,3,3), .2)
-        kernel[1,1,1] = 1.
-        stamp = rearrange(kernel, 'n h w -> 1 1 1 1 n h w')
-    
     if not are_probs:
         probs = [F.one_hot(torch.tensor(v)).to(torch.float32) for v in volumes]
-        # print(probs[0].shape)
     else:
         probs = [torch.tensor(v) for v in volumes]
 
-    convs = []
-    for prob in probs:
-        # pad so we end up with the right shape
-        prob = rearrange(
-            F.pad(rearrange(prob, 'n h w c -> c n h w'), pad=(1,1,1,1,1,1), mode='replicate'),
-            'c n h w -> n h w c'
-        )
+    smoothed = utils.smooth_probabilities(probs, kernel=kernel)
 
-        prob = prob.unfold(0, 3, 1)
-        prob = prob.unfold(1, 3, 1)
-        prob = prob.unfold(2, 3, 1)
-        out = (prob * stamp).sum(dim=(-3, -2, -1))
-        out /= out.max()
-        convs.append(out)
-
-    chars = utils.CHARS[:len(convs)]
+    chars = utils.CHARS[:len(smoothed)]
     ein_exp = ','.join([f'nhw{x}' for x in chars])
     ein_exp += f'->nhw{chars}'
 
-    x = torch.einsum(ein_exp, *convs)
+    x = torch.einsum(ein_exp, *smoothed)
 
     flat_x = rearrange(x, 'n h w ... -> n h w (...)')
     idxs, values = flat_x.argmax(-1), flat_x.max(-1).values
@@ -75,9 +56,9 @@ def merge_volumes(volumes, are_probs=False, kernel=None):
     
     return relabeled.numpy(), values.numpy(), label_to_cluster
 
-def integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=False, dist_thresh=.5, n_iterations=10, resolution=1., dtype_to_weight=None):
+def integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=False, dist_thresh=.5, n_iterations=10, resolution=1., dtype_to_weight=None, kernel=None):
     dtypes, volumes = zip(*dtype_to_volume.items())
-    labeled, _, label_to_cluster = merge_volumes(volumes, are_probs=are_probs)
+    labeled, _, label_to_cluster = merge_volumes(volumes, are_probs=are_probs, kernel=kernel)
 
     if dtype_to_weight is not None:
         # make sure dist_thresh will still work

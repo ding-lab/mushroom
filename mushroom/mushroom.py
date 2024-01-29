@@ -186,7 +186,7 @@ class Mushroom(object):
 
         return dtype_to_df
 
-    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=False, integrate=True, dist_thresh=.5, n_iterations=10, resolution=2., dtype_to_weight=None):
+    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=False, integrate=True, dist_thresh=.5, n_iterations=10, resolution=2., dtype_to_weight=None, kernel=None):
         dtypes, spores = zip(*self.dtype_to_spore.items())
         if self.integrated_clusters is None:
             self.integrated_clusters = [None for i in range(len(next(iter(self.dtype_to_spore.values())).clusters))]
@@ -235,7 +235,7 @@ class Mushroom(object):
         if integrate:
             logging.info(f'generating integrated volume')
             dtype_to_cluster_intensities = self.calculate_cluster_intensities(level=level)
-            integrated = integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=use_probs, dist_thresh=dist_thresh, n_iterations=n_iterations, resolution=resolution, dtype_to_weight=dtype_to_weight)
+            integrated = integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=use_probs, dist_thresh=dist_thresh, n_iterations=n_iterations, resolution=resolution, dtype_to_weight=dtype_to_weight, kernel=kernel)
             logging.info(f'finished integration, found {integrated.max()} clusters')
             dtype_to_volume['integrated'] = integrated
             self.integrated_clusters[level] = np.stack([integrated[i] for i in section_positions])
