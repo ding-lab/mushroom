@@ -186,7 +186,7 @@ class Mushroom(object):
 
         return dtype_to_df
 
-    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=False, integrate=True, dist_thresh=.5, n_iterations=10, resolution=2., dtype_to_weight=None, kernel=None):
+    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=True, integrate=True, dist_thresh=.5, n_iterations=10, resolution=2., dtype_to_weight=None, kernel=None):
         dtypes, spores = zip(*self.dtype_to_spore.items())
         if self.integrated_clusters is None:
             self.integrated_clusters = [None for i in range(len(next(iter(self.dtype_to_spore.values())).clusters))]
@@ -490,7 +490,8 @@ class Spore(object):
                     window[:, labels] = values[selections]
                     labeled_probs[mask] = window
             else:
-                labeled_probs = probs
+                labels = np.unique(probs.argmax(axis=-1))
+                labeled_probs = probs[..., labels]
             
             level_to_probs.append(labeled_probs)
 

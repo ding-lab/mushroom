@@ -58,6 +58,7 @@ def merge_volumes(volumes, are_probs=False, kernel=None):
 
 def integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=False, dist_thresh=.5, n_iterations=10, resolution=1., dtype_to_weight=None, kernel=None):
     dtypes, volumes = zip(*dtype_to_volume.items())
+
     labeled, _, label_to_cluster = merge_volumes(volumes, are_probs=are_probs, kernel=kernel)
 
     if dtype_to_weight is not None:
@@ -81,7 +82,7 @@ def integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=F
         node_edges = []
         for label_b in range(labeled.max()):
             cluster_b = label_to_cluster[label_b]
-            
+
             dist = 0.
             if label_a != label_b:
                 for dtype, ca, cb in zip(dtypes, cluster_a, cluster_b):
