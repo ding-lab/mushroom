@@ -24,13 +24,13 @@ def relabel_merged_volume(merged):
     
     return new, label_to_cluster
 
-def merge_volumes(volumes, are_probs=False, kernel=None):
+def merge_volumes(volumes, are_probs=False, kernel=None, kernel_size=5):
     if not are_probs:
         probs = [F.one_hot(torch.tensor(v)).to(torch.float32) for v in volumes]
     else:
         probs = [torch.tensor(v) for v in volumes]
 
-    smoothed = utils.smooth_probabilities(probs, kernel=kernel)
+    smoothed = utils.smooth_probabilities(probs, kernel=kernel, kernel_size=kernel_size)
 
     chars = utils.CHARS[:len(smoothed)]
     ein_exp = ','.join([f'nhw{x}' for x in chars])
@@ -56,10 +56,10 @@ def merge_volumes(volumes, are_probs=False, kernel=None):
     
     return relabeled.numpy(), values.numpy(), label_to_cluster
 
-def integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=False, dist_thresh=.5, n_iterations=10, resolution=1., dtype_to_weight=None, kernel=None):
+def integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=False, dist_thresh=.5, n_iterations=10, resolution=1., dtype_to_weight=None, kernel=None, kernel_size=5):
     dtypes, volumes = zip(*dtype_to_volume.items())
 
-    labeled, _, label_to_cluster = merge_volumes(volumes, are_probs=are_probs, kernel=kernel)
+    labeled, _, label_to_cluster = merge_volumes(volumes, are_probs=are_probs, kernel=kernel, kernel_size=kernel_size)
 
     if dtype_to_weight is not None:
         # make sure dist_thresh will still work

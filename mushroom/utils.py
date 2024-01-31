@@ -12,9 +12,23 @@ from sklearn.cluster import AgglomerativeClustering
 
 CHARS = 'abcdefghijklmnopqrstuvwxyz'
 
-DEFAULT_KERNEL = torch.full((5,5,5), .1)
-DEFAULT_KERNEL[1:-1, 1:-1, 1:-1] = .25
-DEFAULT_KERNEL[2, 2, 2] = 1.
+DEFAULT_KERNEL_3 = torch.full((3,3,3), .25)
+DEFAULT_KERNEL_3[2, 2, 2] = 1.
+
+DEFAULT_KERNEL_5 = torch.full((5,5,5), .1)
+DEFAULT_KERNEL_5[1:-1, 1:-1, 1:-1] = .25
+DEFAULT_KERNEL_5[2, 2, 2] = 1.
+
+DEFAULT_KERNEL_7 = torch.full((7,7,7), .05)
+DEFAULT_KERNEL_7[1:-1, 1:-1, 1:-1] = .1
+DEFAULT_KERNEL_7[2:-2, 2:-2, 2:-2] = .25
+DEFAULT_KERNEL_7[3, 3, 3] = 1.
+
+DEFAULT_KERNELS = {
+    3: DEFAULT_KERNEL_3,
+    5: DEFAULT_KERNEL_5,
+    7: DEFAULT_KERNEL_7
+}
 
 def listfiles(folder, regex=None):
     """Return all files with the given regex in the given folder structure"""
@@ -25,13 +39,16 @@ def listfiles(folder, regex=None):
             elif re.findall(regex, os.path.join(root, filename)):
                 yield os.path.join(root, filename)
 
-def smooth_probabilities(probs, kernel=None):
+def smooth_probabilities(probs, kernel=None, kernel_size=5):
     """
     probs - (n h w labels)
     kernel - (k, k, k) where k is kernel size
     """
+    if kernel is None and kernel_size is None:
+        return probs
+    
     if kernel is None:
-        kernel = DEFAULT_KERNEL
+        kernel = DEFAULT_KERNELS[5]
 
     is_numpy = isinstance(probs, np.ndarray)
     if is_numpy:

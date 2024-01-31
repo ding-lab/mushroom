@@ -66,6 +66,7 @@ class Mushroom(object):
 
         self.integrated_clusters = None
         self.dtype_to_volume, self.dtype_to_volume_probs = None, None
+        self.section_positions = None
 
     @staticmethod
     def from_config(mushroom_config, accelerator=None):
@@ -156,6 +157,8 @@ class Mushroom(object):
             ]
 
         outputs = {
+            'section_positions': self.section_positions,
+            'section_ids': self.section_ids,
             'dtype_to_volume': self.dtype_to_volume,
             'dtype_to_volume_probs': self.dtype_to_volume_probs,
             'dtype_to_clusters': dtype_to_clusters,
@@ -186,7 +189,7 @@ class Mushroom(object):
 
         return dtype_to_df
 
-    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=True, integrate=True, dist_thresh=.5, n_iterations=10, resolution=2., dtype_to_weight=None, kernel=None):
+    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=True, integrate=True, dist_thresh=.5, n_iterations=10, resolution=2., dtype_to_weight=None, kernel=None, kernel_size=5):
         dtypes, spores = zip(*self.dtype_to_spore.items())
         if self.integrated_clusters is None:
             self.integrated_clusters = [None for i in range(len(next(iter(self.dtype_to_spore.values())).clusters))]
@@ -235,7 +238,7 @@ class Mushroom(object):
         if integrate:
             logging.info(f'generating integrated volume')
             dtype_to_cluster_intensities = self.calculate_cluster_intensities(level=level)
-            integrated = integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=use_probs, dist_thresh=dist_thresh, n_iterations=n_iterations, resolution=resolution, dtype_to_weight=dtype_to_weight, kernel=kernel)
+            integrated = integrate_volumes(dtype_to_volume, dtype_to_cluster_intensities, are_probs=use_probs, dist_thresh=dist_thresh, n_iterations=n_iterations, resolution=resolution, dtype_to_weight=dtype_to_weight, kernel=kernel, kernel_size=kernel_size)
             logging.info(f'finished integration, found {integrated.max()} clusters')
             dtype_to_volume['integrated'] = integrated
             self.integrated_clusters[level] = np.stack([integrated[i] for i in section_positions])
@@ -246,6 +249,7 @@ class Mushroom(object):
                                     for dtype, probs in self.dtype_to_volume_probs.items()}
         else:
             self.dtype_to_volume = dtype_to_volume
+        self.section_positions = section_positions
         return dtype_to_volume
 
     def display_predicted_pixels(self, dtype, channel, level=-1, figsize=None):
@@ -301,15 +305,14 @@ class Mushroom(object):
         if return_axs:
             return axs
         
-    def assign_pts(self, pts, section_id, level=-1, scale=True):
+    def assign_pts(self, pts, section_id, dtype, level=-1, scale=True, use_volume=False):
         """
         pts are (x, y)
         """
         dtype = section_id[1] if dtype is None else dtype
-        spore = self.dtype_to_spore[dtype]
 
         if scale:
-            scaler = spore.input_ppm / spore.target_ppm
+            scaler = self.input_ppm / self.target_ppm
             pts = pts / scaler
             pts = pts.astype(int)
 
@@ -317,8 +320,15 @@ class Mushroom(object):
             section_idx = self.section_ids.index(section_id)            
             nbhds = self.integrated_clusters[level][section_idx]
         else:
-            section_idx = spore.section_ids.index(section_id)            
-            nbhds = spore.clusters[level][section_idx]
+            if use_volume:
+                section_idx = self.section_ids.index(section_id)   
+                position = self.section_positions[section_idx]
+                nbhds = self.dtype_to_volume[dtype][position]
+
+            else:
+                spore = self.dtype_to_spore[dtype]
+                section_idx = spore.section_ids.index(section_id)            
+                nbhds = spore.clusters[level][section_idx]
             
         max_h, max_w = nbhds.shape[0] - 1, nbhds.shape[1] - 1
 
@@ -415,6 +425,11 @@ class Spore(object):
         callbacks.append(vt_callback)
 
         self.trainer = self.initialize_trainer(logger, callbacks)
+
+        if self.chkpt_filepath is not None:
+            logging.info(f'loading checkpoint: {self.chkpt_filepath}')
+            state_dict = torch.load(self.chkpt_filepath)['state_dict']
+            self.model.load_state_dict(state_dict)
             
         self.predicted_pixels, self.scaled_predicted_pixels = None, None
         self.true_pixels, self.scaled_true_pixels = None, None
@@ -435,12 +450,8 @@ class Spore(object):
             config['sections'],
             sae_kwargs=config['sae_kwargs'],
             trainer_kwargs=config['trainer_kwargs'],
+            chkpt_filepath=chkpt_filepath
         )
-
-        if chkpt_filepath is not None:
-            logging.info(f'loading checkpoint: {chkpt_filepath}')
-            state_dict = torch.load(chkpt_filepath)['state_dict']
-            spore.model.load_state_dict(state_dict)
 
         return spore
     

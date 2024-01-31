@@ -77,6 +77,7 @@ def warp_pts(pts, ddf):
     """
     if not isinstance(pts, torch.Tensor):
         pts = torch.tensor(pts)
+    pts = pts.to(torch.long)
     max_r, max_c = pts.max(dim=0).values
     img = torch.zeros((max_r + 1, max_c + 1), dtype=torch.long)
     for i, (r, c) in enumerate(pts):
@@ -137,7 +138,7 @@ def register_visium(to_transform, ddf):
     scaled_warped_hires = rearrange(scaled_warped_hires, 'c h w -> h w c').numpy()
     d['images']['hires'] = scaled_warped_hires / scaled_warped_hires.max() # numpy conversion has slight overflow issue
 
-    warped_lowres = warp_image(lowres, ddf, , fill_type='max')
+    warped_lowres = warp_image(lowres, ddf, fill_type='max')
     scaled_warped_lowres = TF.resize(warped_lowres, (int(scalefactors['tissue_lowres_scalef'] * warped_lowres.shape[-2]), int(scalefactors['tissue_lowres_scalef'] * warped_lowres.shape[-1])), antialias=True)
     scaled_warped_lowres = rearrange(scaled_warped_lowres, 'c h w -> h w c').numpy()
     d['images']['lowres'] = scaled_warped_lowres / scaled_warped_lowres.max() # numpy conversion has slight overflow issue
