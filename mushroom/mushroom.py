@@ -69,7 +69,13 @@ class Mushroom(object):
         self.section_positions = None
 
     @staticmethod
-    def from_config(mushroom_config, accelerator=None):
+    def from_config(mushroom_dir, accelerator=None):
+        mushroom_config = os.path.join(mushroom_dir, 'config.yaml')
+        if os.path.exists(os.path.join(mushroom_dir, 'outputs.npy')):
+            outputs = np.load(os.path.join(mushroom_dir, 'outputs.npy'), allow_pickle=True).flat[0]
+        else:
+            outputs = None
+
         if isinstance(mushroom_config, str):
             mushroom_config = yaml.safe_load(open(mushroom_config))
 
@@ -86,6 +92,13 @@ class Mushroom(object):
         if mushroom_config['dtype_to_chkpt'] is not None:
             logging.info(f'chkpt files detected, embedding to spores')
             mushroom.embed_sections()
+
+        if outputs is not None:
+            mushroom.section_positions = outputs['section_positions']
+            mushroom.section_ids = outputs['section_ids']
+            mushroom.dtype_to_volume = outputs['dtype_to_volume']
+            mushroom.dtype_to_volume_probs = outputs['dtype_to_volume_probs']
+            mushroom.integrated_clusters = outputs['dtype_to_clusters']['integrated']
 
         return mushroom
 
