@@ -40,11 +40,12 @@ def merge_volumes(volumes, are_probs=False, kernel=None, kernel_size=5):
 
     flat_x = rearrange(x, 'n h w ... -> n h w (...)')
     idxs, values = flat_x.argmax(-1), flat_x.max(-1).values
-    meshes = torch.meshgrid(
-        torch.arange(x.shape[-3]),
-        torch.arange(x.shape[-2]),
-        torch.arange(x.shape[-1])
-    )
+    meshes = torch.meshgrid(*[torch.arange(size) for size in x.shape[3:]])
+    # meshes = torch.meshgrid(
+    #     torch.arange(x.shape[-3]),
+    #     torch.arange(x.shape[-2]),
+    #     torch.arange(x.shape[-1])
+    # )
     flat_meshes = torch.stack([mesh.flatten() for mesh in meshes])
 
     objs = flat_meshes[:, idxs.flatten()]

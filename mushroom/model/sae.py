@@ -17,7 +17,7 @@ class SAEargs:
     patch_size: int = 1
     encoder_dim: int = 256
     codebook_dim: int = 64
-    dtype_to_decoder_dims: Mapping = MappingProxyType({'multiplex': (256, 128, 64,), 'visium': (256, 512, 1024 * 2,), 'xenium': (256, 256, 256,)})
+    dtype_to_decoder_dims: Mapping = MappingProxyType({'multiplex': (256, 128, 64,), 'he': (256, 128, 10,), 'visium': (256, 512, 2048,), 'xenium': (256, 256, 256,), 'cosmx': (256, 512, 1024,)})
     encoder_depth: int = 6
     heads: int = 8
     mlp_dim: int = 2048
@@ -88,7 +88,7 @@ class SAE(nn.Module):
         dtype_to_n_channels, # mapping, keys are dtypes, values are n_channels
         codebook_dim = 64,
         num_clusters = (8, 4, 2,),
-        dtype_to_decoder_dims = {'multiplex': (256, 128, 64,), 'visium': (256, 512, 1024 * 2,), 'xenium': (256, 256, 256,), 'he': (256, 128, 10,)},
+        dtype_to_decoder_dims = {'multiplex': (256, 128, 64,), 'he': (256, 128, 10,), 'visium': (256, 512, 2048,), 'xenium': (256, 256, 256,), 'cosmx': (256, 512, 1024,)},
         recon_scaler = 1.,
         neigh_scaler = .1,
         total_steps = 1,

@@ -69,15 +69,18 @@ class Mushroom(object):
         self.section_positions = None
 
     @staticmethod
-    def from_config(mushroom_dir, accelerator=None):
-        mushroom_config = os.path.join(mushroom_dir, 'config.yaml')
-        if os.path.exists(os.path.join(mushroom_dir, 'outputs.npy')):
-            outputs = np.load(os.path.join(mushroom_dir, 'outputs.npy'), allow_pickle=True).flat[0]
-        else:
-            outputs = None
+    def from_config(input, accelerator=None):
+        if isinstance(input, str):
+            mushroom_config = os.path.join(input, 'config.yaml')
+            if os.path.exists(os.path.join(input, 'outputs.npy')):
+                outputs = np.load(os.path.join(input, 'outputs.npy'), allow_pickle=True).flat[0]
+            else:
+                outputs = None
 
-        if isinstance(mushroom_config, str):
             mushroom_config = yaml.safe_load(open(mushroom_config))
+        else:
+            mushroom_config = input
+            outputs = None
 
         if accelerator is not None:
             mushroom_config['trainer_kwargs']['accelerator'] = accelerator
