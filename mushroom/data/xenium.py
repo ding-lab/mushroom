@@ -64,11 +64,14 @@ def adata_from_xenium(filepath, scaler=.1, normalize=False, transcripts=False):
             'key': {
                 'images': {'hires': hires},
                 'scalefactors': {
-                    'tissue_hires_scalef': scaler * ppm,
-                    'spot_diameter_fullres': 10.
+                    # 'tissue_hires_scalef': scaler * ppm,
+                    'tissue_hires_scalef': scaler,
+                    'spot_diameter_fullres': 10.,
                 }
             }
         }
+
+        adata.uns['ppm'] = ppm
 
     # if sparse, then convert
     if 'sparse' in str(type(adata.X)).lower():
