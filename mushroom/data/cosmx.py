@@ -1,3 +1,4 @@
+import logging
 import json
 import os
 import re
@@ -20,10 +21,7 @@ def get_fullres_size(adata):
     return visium.get_fullres_size(adata)
 
 def display_fovs(cosmx_dir):
-    flatfiles_dir = os.path.join(cosmx_dir, 'flatfiles')
-    flat_fps = sorted(utils.listfiles(flatfiles_dir))
-    fov_metadata_fp = [filepath for filepath in flat_fps if 'fov_positions_file.csv.gz' in filepath][0]
-
+    fov_metadata_fp = list(utils.listfiles(cosmx_dir, regex=r'fov_positions_file.csv.gz$'))[0]
     fov_metadata = pd.read_csv(fov_metadata_fp)
 
     sns.scatterplot(data=fov_metadata, x='X_mm', y='Y_mm')
@@ -36,16 +34,12 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
     else:
         if sample_to_bbox is None:
             sample_to_bbox['sample'] = (0, 1000, 0, 1000) # just make arbitrarily large
-        print('start')
         fov_fps = sorted(utils.listfiles(filepath, regex=r'Morphology2D.*TIF$'))
         fov_to_fp = {int(re.sub(r'^.*F0*([1-9]+[0-9]*).TIF$', r'\1', fp)):fp for fp in fov_fps}
-        print(fov_to_fp)
 
         metadata_fp = list(utils.listfiles(filepath, regex=r'metadata_file.csv.gz$'))[0]
         exp_fp = list(utils.listfiles(filepath, regex=r'exprMat_file.csv.gz$'))[0]
         fov_metadata_fp = list(utils.listfiles(filepath, regex=r'fov_positions_file.csv.gz$'))[0]
-
-        print('here')
 
         metadata = pd.read_csv(metadata_fp, index_col='cell')
         fov_metadata = pd.read_csv(fov_metadata_fp)
@@ -71,7 +65,7 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
         
         sample_to_adata = {}
         for sample, (r1, r2, c1, c2) in sample_to_bbox.items():
-            print(sample)
+            logging.info(f'extracting {sample}, bbox is {(r1, r2, c1, c2)}')
             fov_mask = (
                 (fov_metadata['X_mm'] >= c1) &
                 (fov_metadata['X_mm'] <= c2) &
@@ -89,7 +83,7 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
             stitched = np.zeros((tile_size[0], tile_size[1] * len(y_vals), tile_size[2] * len(x_vals)), dtype=np.uint8)
             cell_to_xy = {}
             for fov, (y, x) in fov_to_pos.items():
-                print(fov)
+                logging.info(f'reading fov {fov}')
                 f = metadata[metadata['fov']==fov]
 
                 tile = tifffile.imread(fov_to_fp[fov])

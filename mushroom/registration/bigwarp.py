@@ -197,57 +197,11 @@ def register_visium(to_transform, ddf):
 
 #     return new
 
+def register_cosmx(adata, ddf):
+    return register_xenium(adata, ddf)
+
 def register_xenium(adata, ddf):
     new = adata.copy()
-
-    # # get rid of cells and transcripts outside of ddf
-    # pts = new.uns['transcripts'][['y_location', 'x_location']].values
-    # print(type(pts))
-    # mask = ((pts[:, 0] < ddf.shape[-2]) & (pts[:, 1] < ddf.shape[-1]))
-    # pts = pts[mask]
-
-    # new.uns['transcripts'] = new.uns['transcripts'][mask]
-
-
-    # deltas = ddf[:, pts[:, 0], pts[:, 1]]
-    # warped_pts = pts + deltas.t().numpy()
-
-    # new.uns['transcripts']['y_location_orig'] = new.uns['transcripts']['y_location'].to_list()
-    # new.uns['transcripts']['x_location_orig'] = new.uns['transcripts']['x_location'].to_list()
-    # new.uns['transcripts']['y_location'] = warped_pts[:, 0]
-    # new.uns['transcripts']['x_location'] = warped_pts[:, 1]
-
-    # # filter transcripts out side of registered field of view
-    # mask = (
-    #     (new.uns['transcripts']['y_location']>=0) &\
-    #     (new.uns['transcripts']['y_location']<=ddf.shape[-2]) &\
-    #     (new.uns['transcripts']['x_location']>=0) &\
-    #     (new.uns['transcripts']['y_location']<=ddf.shape[-1])
-    # )
-    # new.uns['transcripts'] = new.uns['transcripts'][mask]
-
-
-    # new.obsm['spatial_orig'] = new.obsm['spatial'].copy()
-    # pts = np.asarray(new.obsm['spatial'][:, [1, 0]])
-
-    # mask = ((pts[:, 0] < ddf.shape[-2]) & (pts[:, 1] < ddf.shape[-1]))
-    # pts = pts[mask]
-    # new = new[mask]
-
-    # deltas = ddf[:, pts[:, 0], pts[:, 1]]
-    # warped_pts = pts + deltas.t().numpy()
-    # new.obsm['spatial'] = warped_pts[:, [1, 0]].astype(int)
-
-
-    # # filter cells out side registered field of view
-    # mask = (
-    #     (new.obsm['spatial'][:, 1]>=0) &\
-    #     (new.obsm['spatial'][:, 1]<=ddf.shape[-2]) &\
-    #     (new.obsm['spatial'][:, 0]>=0) &\
-    #     (new.obsm['spatial'][:, 0]<=ddf.shape[-1])
-    # )
-    # new = new[mask]
-
 
     new.obsm['spatial_original'] = new.obsm['spatial'].copy()
     x = new.obsm['spatial'][:, [1, 0]]
