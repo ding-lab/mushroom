@@ -121,7 +121,7 @@ class Mushroom(object):
             if len(fps) == 1:
                 chkpt_fp = os.path.join(chkpt_dir, 'last.ckpt')
             else:
-                val = np.max([int(re.sub(r'^last-v([0-9]+).ckpt$', r'\1', fp)) for fp in fps])
+                val = np.max([int(re.sub(r'^last-v([0-9]+).ckpt$', r'\1', fp)) for fp in fps if 'last-v' in fp])
                 chkpt_fp = os.path.join(chkpt_dir, f'last-v{val}.ckpt')
 
             logging.info(f'finished training {dtype}, saved chkpt to {chkpt_fp}')
@@ -205,7 +205,7 @@ class Mushroom(object):
 
         return dtype_to_df
 
-    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=True, integrate=True, dist_thresh=.5, n_iterations=10, resolution=2., dtype_to_weight=None, kernel=None, kernel_size=5):
+    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=True, integrate=True, dist_thresh=.4, n_iterations=10, resolution=2., dtype_to_weight=None, kernel=None, kernel_size=None):
         dtypes, spores = zip(*self.dtype_to_spore.items())
         if self.integrated_clusters is None:
             self.integrated_clusters = [None for i in range(len(next(iter(self.dtype_to_spore.values())).clusters))]

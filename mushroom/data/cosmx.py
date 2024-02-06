@@ -143,7 +143,7 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
             adata.X = adata.X.toarray()
 
         if normalize:
-            sc.pp.log1p(adata)
+            sc.pp.log1p(adata, base=10)
 
         sample_to_adata[sid] = adata
     
