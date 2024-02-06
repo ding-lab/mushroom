@@ -1,0 +1,191 @@
+sae_kwargs:
+  codebook_dim: 64
+  dtype_to_decoder_dims:
+    he:
+    - 256
+    - 128
+    - 10
+    multiplex:
+    - 256
+    - 128
+    - 64
+    visium:
+    - 256
+    - 512
+    - 2048
+    xenium:
+    - 256
+    - 256
+    - 256
+  encoder_dim: 128
+  neigh_scaler: 0.2
+  num_clusters:
+  - 8
+  - 4
+  - 2
+  patch_size: 1
+  recon_scaler: 1.0
+  size: 8
+trainer_kwargs:
+  accelerator: gpu
+  batch_size: 128
+  channel_mapping:
+    BCA1: BCA1
+    BCAL: BCAL
+    Bap1 (D): Bap1
+    CD107a: CD107A
+    CD11b: CD11b
+    CD11b (D): CD11b
+    CD11b-(D): CD11b
+    CD11c: CD11c
+    CD138: CD138
+    CD163: CD163
+    CD20: CD20
+    CD20 (D): CD20
+    CD20-(D): CD20
+    CD20-Akoya: CD20
+    CD3: CD3e
+    CD31: CD31
+    CD31 (D): CD31
+    CD31-(D): CD31
+    CD36: CD36
+    CD36-(D): CD36
+    CD39: CD39
+    CD3e: CD3e
+    CD4: CD4
+    CD4 (D): CD4
+    CD44: CD44
+    CD45: CD45
+    CD45 (D): CD45
+    CD45(D): CD45
+    CD45-(D): CD45
+    CD45RA: CD45RA
+    CD45RO: CD45RO
+    CD68: CD68
+    CD68 (D): CD68
+    CD68-(D): CD68
+    CD8: CD8
+    CD8a: CD8
+    CK14: CK14
+    CK14 (D): CK14
+    CK17: CK17
+    CK17 (D): CK17
+    CK17-(D): CK17
+    CK19: CK19
+    CK19 (D): CK19
+    CK19-(D): CK19
+    COX2: COX2
+    COX6c (D): COX6c
+    CTLA4: CTLA4
+    CTLA4 (D): CTLA4
+    CTLA4-(D): CTLA4
+    DAPI: DAPI
+    E-cadherin: E-cadherin
+    ER: ER
+    ER (D): ER
+    ER-(D): ER
+    FGFR3: FGFR3
+    FN1: FN1
+    FN1 (D): FN1
+    FOXP3: FOXP3
+    FoxP3: FOXP3
+    Foxp3: FOXP3
+    GATA3: GATA3
+    GATA3 (D): GATA3
+    GATA3-(D): GATA3
+    GFAP: GFAP
+    GFAP (D): GFAP
+    GLUT1: GLUT1
+    GLUT1 (D): GLUT1
+    GLUT1-(D): GLUT1
+    GP2: GP2
+    Glut1: GLUT1
+    Granzyme B: Granzyme-B
+    HIF1A: HIF1A
+    HIF1a: HIF1A
+    HIF1a (D): HIF1A
+    HLA-DR: HLA-DR
+    Hep-Par-1 (D): Hep-Par-1
+    Her2: Her2
+    Her2 (D): Her2
+    Histone H3 Pho: Histone-H3-Pho
+    IBA1: IBA1
+    IBA1 (D): IBA1
+    KI67: Ki67
+    KRT5: CK5
+    Keratin 14: CK14
+    Keratin 17: CK17
+    Keratin 5: CK5
+    Ki67: Ki67
+    Lyve-1: Lyve-1
+    MGP: MGP
+    MGP (D): MGP
+    MGP-(D): MGP
+    MLPH: MLPH
+    MMP9: MMP9
+    Maspin: Maspin
+    OLIG2: OLIG2
+    OLIG2 (D): OLIG2
+    P16-(D): P16
+    P21: P21
+    P21 (D): P21
+    P21-(D): P21
+    P63: P63
+    PAI1: PAI1
+    PAI1-(D): PAI1
+    PD-1: PD1
+    PD-L1: PDL1
+    PDPN: Podoplanin
+    PLAT/tPA: PLAT/tPA
+    PLAT/tPA (D): PLAT/tPA
+    PR: PR
+    PR (D): PR
+    PR-(D): PR
+    PTPRZ1: PTPRZ1
+    PTPRZ1 (D): PTPRZ1
+    Pan-CK: Pan-Cytokeratin
+    Pan-CK (D): Pan-Cytokeratin
+    Pan-Cytokeratin: Pan-Cytokeratin
+    PanCK (D): Pan-Cytokeratin
+    Podoplanin: Podoplanin
+    Podoplanin (D): Podoplanin
+    SLC39A6: SLC39A6
+    SMA: SMA
+    SMA (D): SMA
+    SMA-(D): SMA
+    TCF-1: TCF-1
+    TFF1: TFF1
+    TFF1 (D): TFF1
+    TFF1-(D): TFF1
+    TUBB3: TUBB3
+    TUBB3 (D): TUBB3
+    VEGFA: VEGFA
+    VEGFA (D): VEGFA
+    Vimentin: Vimentin
+    Vimentin (D): Vimentin
+    Vimentin-(D): Vimentin
+    a-Amylase: a-Amylase
+    a-SMA (D): SMA
+    beta-integrin: beta-integrin
+    beta3-integrin: beta-integrin
+    cKIT: cKit
+    cKIT (D): cKit
+    cKIT-(D): cKit
+    cKit: cKit
+    cKit (D): cKit
+  contrast_pct: null
+  devices: 1
+  enable_checkpointing: true
+  input_ppm: 2.484081102305233
+  log_dir: ./
+  log_every_n_steps: 10
+  logger_channel: CD45
+  logger_type: wandb
+  lr: 0.0001
+  max_epochs: 5
+  num_workers: 1
+  pct_expression: 0.02
+  save_dir: ./
+  save_every: 1
+  steps_per_epoch: 100
+  target_ppm: 0.01

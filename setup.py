@@ -38,11 +38,15 @@ setup(
         'torch',
         'torchio',
         'torchvision',
-        'pytorch-lightning',
+        'tensorboard',
+        'tensorboardX',
+        'lightning',
         'vit-pytorch',
         'einops',
         'wandb',
         'timm',
+        'leidenalg',
+        'igraph',
     ],
     extras_require={
         'viz': [

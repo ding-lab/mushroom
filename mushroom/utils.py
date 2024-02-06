@@ -4,10 +4,31 @@ import re
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from torchio.transforms import Resize
 from einops import rearrange
 from sklearn.cluster import AgglomerativeClustering
+
+CHARS = 'abcdefghijklmnopqrstuvwxyz'
+
+DEFAULT_KERNEL_3 = torch.full((3,3,3), .25)
+DEFAULT_KERNEL_3[2, 2, 2] = 1.
+
+DEFAULT_KERNEL_5 = torch.full((5,5,5), .1)
+DEFAULT_KERNEL_5[1:-1, 1:-1, 1:-1] = .25
+DEFAULT_KERNEL_5[2, 2, 2] = 1.
+
+DEFAULT_KERNEL_7 = torch.full((7,7,7), .05)
+DEFAULT_KERNEL_7[1:-1, 1:-1, 1:-1] = .1
+DEFAULT_KERNEL_7[2:-2, 2:-2, 2:-2] = .25
+DEFAULT_KERNEL_7[3, 3, 3] = 1.
+
+DEFAULT_KERNELS = {
+    3: DEFAULT_KERNEL_3,
+    5: DEFAULT_KERNEL_5,
+    7: DEFAULT_KERNEL_7
+}
 
 def listfiles(folder, regex=None):
     """Return all files with the given regex in the given folder structure"""
@@ -18,6 +39,43 @@ def listfiles(folder, regex=None):
             elif re.findall(regex, os.path.join(root, filename)):
                 yield os.path.join(root, filename)
 
+def smooth_probabilities(probs, kernel=None, kernel_size=5):
+    """
+    probs - (n h w labels)
+    kernel - (k, k, k) where k is kernel size
+    """
+    if kernel is None and kernel_size is None:
+        return probs
+    
+    if kernel is None:
+        kernel = DEFAULT_KERNELS[5]
+
+    is_numpy = isinstance(probs, np.ndarray)
+    if is_numpy:
+        probs = torch.tensor(probs)
+
+    stamp = rearrange(kernel, '... -> 1 1 1 1 ...')
+    convs = []
+    for prob in probs:
+        # pad so we end up with the right shape
+        kernel_size = kernel.shape[0]
+        pad = tuple([kernel_size // 2 for i in range(6)])
+        prob = rearrange(
+            F.pad(rearrange(prob, 'n h w c -> c n h w'), pad=pad, mode='replicate'),
+            'c n h w -> n h w c'
+        )
+
+        prob = prob.unfold(0, kernel_size, 1)
+        prob = prob.unfold(1, kernel_size, 1)
+        prob = prob.unfold(2, kernel_size, 1)
+        out = (prob * stamp).sum(dim=(-3, -2, -1))
+        out /= out.max()
+
+        if is_numpy:
+            out = out.numpy()
+
+        convs.append(out)
+    return convs
 
 def get_interpolated_volume(stacked, section_positions, method='label_gaussian'):
     """
@@ -32,21 +90,29 @@ def get_interpolated_volume(stacked, section_positions, method='label_gaussian')
         stacked = rearrange(stacked, 'n h w -> 1 n h w')
         squeeze = True
 
-    interp_volume = np.zeros((stacked.shape[0], section_range[-1], stacked.shape[-2], stacked.shape[-1]), dtype=stacked.dtype)
+    interp_volume = np.zeros((stacked.shape[0], section_range[-1] + 1, stacked.shape[-2], stacked.shape[-1]), dtype=stacked.dtype)
     for i in range(stacked.shape[1] - 1):
         l1, l2 = section_positions[i], section_positions[i+1]
 
         stack = stacked[:, i:i+2]
+
         transform = Resize((l2 - l1, stack.shape[-2], stack.shape[-1]), image_interpolation=method)
         resized = transform(stack)
-
         interp_volume[:, l1:l2] = resized
+    
+    # add last section
+    interp_volume[:, -1] = stacked[:, -1]
     
     if squeeze:
         interp_volume = rearrange(interp_volume, '1 n h w -> n h w')
 
     return interp_volume
 
+def smoosh(*args):
+    new = 0
+    for i, val in enumerate(args):
+        new += val * 10**i
+    return new
 
 def relabel(labels):
     new = torch.zeros_like(labels, dtype=labels.dtype)
@@ -55,6 +121,12 @@ def relabel(labels):
         new[labels==ids[i]] = i
         
     return new
+
+def label_agg_clusters(clusters):
+    smooshed = np.vectorize(smoosh)(*clusters)
+    relabeled = relabel(torch.tensor(smooshed)).numpy()
+    mapping = {relabeled[s, r, c]:tuple([x[s, r, c].item() for x in clusters]) for s in range(relabeled.shape[0]) for r in range(relabeled.shape[1]) for c in range(relabeled.shape[2])}
+    return relabeled, mapping
 
 
 def aggregate_clusters(df, cluster_ids, n_clusters=10, distance_threshold=None):
@@ -84,20 +156,7 @@ def display_thresholds(cuts, cluster_ids, intensity_df, channel):
     return axs
 
 
-def display_cluster_probs(probs):
-    if isinstance(probs, torch.Tensor):
-        probs = probs.cpu().detach().numpy()
-    fig, axs = plt.subplots(nrows=probs.shape[1], ncols=probs.shape[0], figsize=(probs.shape[0], probs.shape[1]))
-    for c in range(probs.shape[0]):
-        for r in range(probs.shape[1]):
-            ax = axs[r, c]
-            ax.imshow(probs[c, r])
-            ax.set_yticks([])
-            ax.set_xticks([])
-            if c == 0: ax.set_ylabel(r, rotation=90)
-
-
-def rescale(x, scale=.1, dim_order='h w c', target_dtype=torch.uint8):
+def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8, antialias=True, interpolation=TF.InterpolationMode.BILINEAR):
     is_tensor = isinstance(x, torch.Tensor)
     if not is_tensor:
         x = torch.tensor(x)
@@ -107,7 +166,10 @@ def rescale(x, scale=.1, dim_order='h w c', target_dtype=torch.uint8):
     elif dim_order == 'h w':
         x = rearrange(x, 'h w -> 1 h w')
 
-    x = TF.resize(x, (int(x.shape[-2] * scale), int(x.shape[-1] * scale)), antialias=True)
+    if size is None:
+        size = (int(x.shape[-2] * scale), int(x.shape[-1] * scale))
+
+    x = TF.resize(x, size, antialias=antialias, interpolation=interpolation)
     x = TF.convert_image_dtype(x, target_dtype)
 
     if dim_order == 'h w c':
@@ -120,3 +182,9 @@ def rescale(x, scale=.1, dim_order='h w c', target_dtype=torch.uint8):
     
     return x
             
+
+# def mask_list(x, mask):
+#     """
+#     apply mask to non-maskable array
+#     """
+#     mask = 
