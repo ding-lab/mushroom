@@ -28,7 +28,7 @@ def display_fovs(cosmx_dir):
     plt.gca().invert_yaxis()
     plt.axis('equal')
 
-def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sample_to_bbox=None):
+def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sample_to_bbox=None, base=10):
     if filepath.split('.')[-1] == 'h5ad':
         sample_to_adata = {'sample': sc.read_h5ad(filepath)}
     else:
@@ -143,7 +143,7 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
             adata.X = adata.X.toarray()
 
         if normalize:
-            sc.pp.log1p(adata, base=10)
+            sc.pp.log1p(adata, base=base)
 
         sample_to_adata[sid] = adata
     

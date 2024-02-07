@@ -30,6 +30,8 @@ DEFAULT_KERNELS = {
     7: DEFAULT_KERNEL_7
 }
 
+DTYPES = ('multiplex', 'xenium', 'visium', 'he', 'cosmx', 'points',)
+
 def listfiles(folder, regex=None):
     """Return all files with the given regex in the given folder structure"""
     for root, folders, files in os.walk(folder):
@@ -38,6 +40,16 @@ def listfiles(folder, regex=None):
                 yield os.path.join(root, filename)
             elif re.findall(regex, os.path.join(root, filename)):
                 yield os.path.join(root, filename)
+
+
+def parse_dtype(dtype_string):
+    if '_' not in dtype_string:
+        parsed = dtype_string
+    else:
+        parsed = dtype_string.split('_')[-1]
+
+    if parsed not in DTYPES:
+        raise RuntimeError(f'{parsed} is not a valid dtype string. valid data identifiers are either {DTYPES} or "[string]_[dtype]" where string can be any filepath-safe string and dtype must in {DTYPES}')
 
 def smooth_probabilities(probs, kernel=None, kernel_size=5):
     """
@@ -181,10 +193,3 @@ def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8,
         x = x.numpy()
     
     return x
-            
-
-# def mask_list(x, mask):
-#     """
-#     apply mask to non-maskable array
-#     """
-#     mask = 

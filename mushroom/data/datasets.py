@@ -16,9 +16,10 @@ import mushroom.data.multiplex as multiplex
 import mushroom.data.visium as visium
 import mushroom.data.xenium as xenium
 import mushroom.data.cosmx as cosmx
+import mushroom.data.user_points as user_points
 import mushroom.utils as utils
 
-DTYPES = ('multiplex', 'xenium', 'visium', 'he', 'cosmx',)
+DTYPES = utils.DTYPES
 
 
 def get_config_info(config, name):
@@ -177,6 +178,41 @@ def get_visium_section_to_img(
 
     return section_to_img, section_to_adata, normalize, channels
 
+def get_points_section_to_img(
+        config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02,
+    ):
+    logging.info(f'starting points processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, 'points')
+
+    if channels is None:
+        channels = user_points.get_common_channels(
+            fps, channel_mapping=channel_mapping, pct_expression=pct_expression
+        )
+
+    logging.info(f'using {len(channels)} channels')
+    logging.info(f'{len(section_ids)} sections detected: {section_ids}')
+
+    logging.info(f'processing sections')
+    tiling_size = int(ppm / target_ppm)
+    section_to_adata = {
+        sid:user_points.adata_from_point_based(fp, normalize=True)
+        for sid, fp in sid_to_filepaths.items()
+    }
+
+    section_to_adata = {sid:adata[:, channels] for sid, adata in section_to_adata.items()}
+
+    section_to_img = {}
+    for sid, adata in section_to_adata.items():
+        logging.info(f'generating image data for section {sid}')
+        img = user_points.to_multiplex(adata, tiling_size=tiling_size)
+        img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
+        section_to_img[sid] = img
+   
+    normalize = generate_norm_transform(section_to_img)
+
+    return section_to_img, section_to_adata, normalize, channels
+
+
 
 def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, contrast_pct=None, pct_expression=.02):
 
@@ -202,6 +238,8 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, c
             section_to_img, section_to_adata, norm, channels = get_cosmx_section_to_img(config, ppm, target_ppm, channel_mapping=None)
         elif dtype == 'visium':
             section_to_img, section_to_adata, norm, channels = get_visium_section_to_img(config, ppm, target_ppm, channel_mapping=None, pct_expression=pct_expression)
+        elif dtype == 'points':
+            section_to_img, section_to_adata, norm, channels = get_points_section_to_img(config, ppm, target_ppm, channel_mapping=None, pct_expression=pct_expression)
         else:
             raise RuntimeError(f'dtype {dtype} is not a valid data type')
         

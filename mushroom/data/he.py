@@ -1,4 +1,5 @@
 import logging
+import re
 
 import numpy as np
 import torch
@@ -7,10 +8,30 @@ import tifffile
 from tifffile import TiffFile
 from einops import rearrange
 from torchvision.transforms import Normalize
+from ome_types import from_xml
 
 import mushroom.data.multiplex as multiplex
 from mushroom.data.inference import InferenceTransform, InferenceSectionDataset
 from mushroom.data.utils import LearnerData
+
+def pixels_per_micron(filepath):
+    tf = tifffile.TiffFile(filepath)
+    p = next(iter(tf.pages))
+
+    # test for .svs metadata
+    matches = re.findall(r'MPP = [0-9]+.[0-9]+', p.description)
+    if len(matches):
+        return 1 / float(matches[0].split()[-1])
+    
+    # test for OME-TIF
+    if p.is_ome:
+        ome = from_xml(tf.ome_metadata)
+        im = ome.images[0]
+        return im.pixels.physical_size_x
+    
+    # just give back resolution of page
+    if p.resolution is not None:
+        return p.resolution[0]
 
 def get_size(filepath):
     tif = TiffFile(filepath)
