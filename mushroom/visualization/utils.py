@@ -10,6 +10,7 @@ import torchvision.transforms.functional as TF
 import tifffile
 from einops import rearrange, repeat
 from PIL import Image
+from skimage.exposure import adjust_gamma
 
 import mushroom.data.multiplex as multiplex
 import mushroom.data.visium as visium
@@ -222,4 +223,4 @@ def save_reference_gif(rgb, filepath, axis=0, duration=200, color=(1., 0., 0.), 
                 for x in imgs]
     ims[0].save(fp=filepath, format='GIF', append_images=ims,
              save_all=True, duration=duration, loop=0)
-      
+    

@@ -40,18 +40,25 @@ def get_size(filepath):
 
 def read_he(filepath, scale=None):
     ext = filepath.split('.')[-1]
-    if ext == 'tif':
+    if ext in ['tif', 'svs']:
         img = tifffile.imread(filepath)
-    elif ext == 'svs':
-        raise RuntimeError('reading .svs not implemented yet')
     else:
-        raise RuntimeError(f'Extension {ext} not supported for H&E')
+        raise RuntimeError(f'File extension {ext} not supported for H&E. Supported extensions are .tif or .svs')
     
+    if img.shape[-1] == 3:
+        img = rearrange(img, 'h w c -> c h w')
+        dim_order = 'h w c'
+    else:
+        dim_order = 'c h w'
+
     if scale is not None:
-        img = rearrange(torch.tensor(img), 'h w c -> c h w')
+        img = torch.tensor(img)
         target_size = [int(x * scale) for x in img.shape[-2:]]
         img = TF.resize(img, size=target_size, antialias=True)
-        img = rearrange(img, 'c h w -> h w c').numpy()
+        img = img.numpy()
+
+    if dim_order == 'h w c':
+        img = rearrange(img, 'c h w -> h w c')
     
     return img
 
