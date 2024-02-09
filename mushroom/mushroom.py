@@ -1,7 +1,7 @@
 import logging
 import os
 import re 
-import pickle
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
@@ -26,29 +26,66 @@ from mushroom.model.integration import integrate_volumes
 import mushroom.utils as utils
 
 
+DEFAULT_CONFIG = {
+    'sections': None,
+    'dtype_to_chkpt': None,
+    'dtype_specific_params': None,
+    'sae_kwargs': {
+        'size': 8,
+        'patch_size': 1,
+        'encoder_dim': 128,
+        'codebook_dim': 64,
+        'num_clusters': (8, 4, 2,),
+        'dtype_to_decoder_dims': {'multiplex': (256, 128, 64,), 'he': (256, 128, 10,), 'visium': (256, 512, 2048,), 'xenium': (256, 256, 256,), 'cosmx': (256, 512, 1024,), 'points': (256, 512, 1024)},
+        'recon_scaler': 1.,
+        'neigh_scaler': .01,
+    },
+    'trainer_kwargs': {
+        'input_resolution': 1.,
+        'target_resolution': .02, # grid width of 50 microns
+        'pct_expression': .05,
+        'batch_size': 128,
+        'num_workers': 1,
+        'devices': 1,
+        'accelerator': 'cpu',
+        'max_epochs': 1,
+        'steps_per_epoch': 1000,
+        'lr': 1e-4,
+        'out_dir': './outputs',
+        'save_every': 1,
+        'log_every_n_steps': 10,
+        'logger_type': 'tensorboard',
+        'logger_project': 'portobello',
+        'channel_mapping': {},
+    },
+}
+
+
 class Mushroom(object):
     def __init__(
             self,
             sections,
             dtype_to_chkpt=None,
+            dtype_specific_params=None,
             sae_kwargs=None,
             trainer_kwargs=None,
         ):
         self.sections = sections
         self.dtype_to_chkpt = dtype_to_chkpt
+        self.dtype_specific_params = dtype_specific_params
         self.sae_kwargs = sae_kwargs
         self.trainer_kwargs = trainer_kwargs
-        self.input_ppm = self.trainer_kwargs['input_ppm']
-        self.target_ppm = self.trainer_kwargs['target_ppm']
+        self.input_ppm = self.trainer_kwargs['input_resolution']
+        self.target_ppm = self.trainer_kwargs['target_resolution']
 
-        self.section_ids = [(entry['id'], d['dtype']) for entry in sections
+        self.section_ids = [(entry['sid'], d['dtype']) for entry in sections
                        for d in entry['data']]
         self.dtypes = sorted({x for _, x in self.section_ids})
 
         self.dtype_to_spore = {}
         for dtype in self.dtypes:
             logging.info(f'loading spore for {dtype}')
-            dtype_sections = [entry for entry in sections if dtype in [item['dtype'] for item in entry['data']]]
+            dtype_sections = [entry for entry in deepcopy(sections) if dtype in [item['dtype'] for item in entry['data']]]
             for i, entry in enumerate(dtype_sections):
                 entry['data'] = [item for item in entry['data'] if item['dtype'] == dtype]
                 dtype_sections[i] = entry
@@ -59,8 +96,18 @@ class Mushroom(object):
             trainer_kwargs['log_dir'] = os.path.join(out_dir, f'{dtype}_logs')
 
             chkpt_filepath = self.dtype_to_chkpt[dtype] if self.dtype_to_chkpt is not None else None
+            
+            spore_sae_kwargs = deepcopy(sae_kwargs)
+            spore_trainer_kwargs = deepcopy(trainer_kwargs)
+            if self.dtype_specific_params is not None:
+                to_update = self.dtype_specific_params.get(dtype, {})
+                if 'sae_kwargs' in to_update:
+                    spore_sae_kwargs = utils.recursive_update(spore_sae_kwargs, to_update['sae_kwargs'])
+                if 'trainer_kwargs' in to_update:
+                    spore_trainer_kwargs = utils.recursive_update(spore_trainer_kwargs, to_update['trainer_kwargs'])
 
-            spore = Spore(dtype_sections, chkpt_filepath=chkpt_filepath, sae_kwargs=sae_kwargs, trainer_kwargs=trainer_kwargs)
+            res_scaler =  self.trainer_kwargs['target_resolution'] / spore_trainer_kwargs['target_resolution']
+            spore = Spore(dtype_sections, chkpt_filepath=chkpt_filepath, sae_kwargs=spore_sae_kwargs, trainer_kwargs=spore_trainer_kwargs, res_scaler=res_scaler)
 
             self.dtype_to_spore[dtype] = spore
 
@@ -88,6 +135,7 @@ class Mushroom(object):
         mushroom = Mushroom(
             mushroom_config['sections'],
             dtype_to_chkpt=mushroom_config['dtype_to_chkpt'],
+            dtype_specific_params=mushroom_config['dtype_specific_params'],
             sae_kwargs=mushroom_config['sae_kwargs'],
             trainer_kwargs=mushroom_config['trainer_kwargs'],
         )
@@ -363,23 +411,23 @@ class Spore(object):
             chkpt_filepath=None,
             sae_kwargs=None,
             trainer_kwargs=None,
+            res_scaler=1.,
         ):
         self.sections = sections
         self.chkpt_filepath = chkpt_filepath
         self.sae_kwargs = sae_kwargs
         self.trainer_kwargs = trainer_kwargs
+        self.res_scaler = res_scaler
 
         self.channel_mapping = self.trainer_kwargs['channel_mapping']
-        self.input_ppm = self.trainer_kwargs['input_ppm']
-        self.target_ppm = self.trainer_kwargs['target_ppm']
-        self.contrast_pct = self.trainer_kwargs['contrast_pct']
+        self.input_ppm = self.trainer_kwargs['input_resolution']
+        self.target_ppm = self.trainer_kwargs['target_resolution']
         self.pct_expression = self.trainer_kwargs['pct_expression']
 
         self.sae_args = SAEargs(**self.sae_kwargs) if self.sae_kwargs is not None else {}
         self.size = (self.sae_args.size, self.sae_args.size)
-
         self.learner_data = get_learner_data(self.sections, self.input_ppm, self.target_ppm, self.sae_args.size,
-                                             channel_mapping=self.channel_mapping, contrast_pct=self.contrast_pct, pct_expression=self.pct_expression)
+                                             channel_mapping=self.channel_mapping, pct_expression=self.pct_expression)
         self.section_ids = self.learner_data.train_ds.section_ids
         self.dtypes = self.learner_data.dtypes
         self.dtype_to_channels = self.learner_data.dtype_to_channels
@@ -534,7 +582,7 @@ class Spore(object):
         return Trainer(
             devices=self.trainer_kwargs['devices'],
             accelerator=self.trainer_kwargs['accelerator'],
-            enable_checkpointing=self.trainer_kwargs['enable_checkpointing'],
+            enable_checkpointing=True,
             log_every_n_steps=self.trainer_kwargs['log_every_n_steps'],
             max_epochs=self.trainer_kwargs['max_epochs'],
             callbacks=callbacks,
@@ -548,14 +596,30 @@ class Spore(object):
     def embed_sections(self):
         outputs = self.trainer.predict(self.model, self.inference_dl)
         formatted = self.model.format_prediction_outputs(outputs)
-        self.predicted_pixels = [[z.cpu().clone().detach().numpy() for z in x] for x in formatted['predicted_pixels']]
-        self.true_pixels = [x.cpu().clone().detach().numpy() for x in formatted['true_pixels']]
-        self.clusters = [x for x in formatted['clusters']]
-        self.agg_clusters = [x.cpu().clone().detach().numpy().astype(int) for x in formatted['agg_clusters']]
-        self.cluster_probs_agg = [x.cpu().clone().detach().numpy() for x in formatted['cluster_probs']]
-        self.cluster_to_agg = [x for x in formatted['label_to_original']]
+        self.predicted_pixels = [[z.cpu().clone().detach().numpy() for z in x] for x in formatted['predicted_pixels']] # [level][n](h w c)
+        self.true_pixels = [x.cpu().clone().detach().numpy() for x in formatted['true_pixels']] # [n](h w c)
+        self.clusters = [x for x in formatted['clusters']] # [level](n h w)
+        self.agg_clusters = [x.cpu().clone().detach().numpy().astype(int) for x in formatted['agg_clusters']] # [level](n h w)
+        self.cluster_probs_agg = [x.cpu().clone().detach().numpy() for x in formatted['cluster_probs']] # [level](n h w c) where c is n clusters for that level
+        self.cluster_to_agg = [x for x in formatted['label_to_original']] # [level]d where d is dict mapping cluster label to original cluster
 
+        # self.cluster_probs - [level](n, h, w, *) where * is number of dims equal to num clusters for each level
+        # self.cluster_probs_all - [level](n, h, w, c) where c is total number of clusters in level
         self.cluster_probs, self.cluster_probs_all = self._calculate_probs()
+
+        print('predicted_pixels', len(self.predicted_pixels), len(self.predicted_pixels[0]), self.predicted_pixels[0][0].shape)
+        print('true_pixels', len(self.true_pixels), self.true_pixels[0].shape)
+        print('clusters', len(self.clusters), self.clusters[0].shape)
+        print('agg_clusters', len(self.agg_clusters), self.agg_clusters[0].shape)
+        print('cluster_probs_agg', len(self.cluster_probs_agg), self.cluster_probs_agg[0].shape)
+        print('cluster_to_agg', len(self.cluster_to_agg), self.cluster_to_agg[0])
+
+        for level in range(3):
+            print('cluster_probs', len(self.cluster_probs), self.cluster_probs[level].shape, type(self.cluster_probs))
+            print('cluster_probs_all', len(self.cluster_probs_all), self.cluster_probs_all[level].shape, type(self.cluster_probs_all))
+
+        # rescale to match expected neighborhood resolution by Mushroom
+
 
     def get_cluster_intensities(self, use_predicted=True, level=-1, input_clusters=None):
         if input_clusters is None:

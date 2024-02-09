@@ -1,3 +1,4 @@
+import collections.abc
 import os
 import re
 
@@ -40,6 +41,15 @@ def listfiles(folder, regex=None):
                 yield os.path.join(root, filename)
             elif re.findall(regex, os.path.join(root, filename)):
                 yield os.path.join(root, filename)
+
+# https://stackoverflow.com/questions/3232943/update-value-of-a-nested-dictionary-of-varying-depth
+def recursive_update(d, u):
+    for k, v in u.items():
+        if isinstance(v, collections.abc.Mapping):
+            d[k] = recursive_update(d.get(k, {}), v)
+        else:
+            d[k] = v
+    return d
 
 
 def parse_dtype(dtype_identifier):

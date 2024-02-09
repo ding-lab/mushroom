@@ -25,11 +25,11 @@ DTYPES = utils.DTYPES
 def get_config_info(config, name):
     assert name in DTYPES, f'data type must be one of {DTYPES}, got {name}'
     sid_to_filepaths = {
-        entry['id']:d['filepath'] for entry in config for d in entry['data']
+        entry['sid']:d['filepath'] for entry in config for d in entry['data']
         if d['dtype']==name
     }
 
-    section_ids = [entry['id'] for entry in config
+    section_ids = [entry['sid'] for entry in config
                    if name in [d['dtype'] for d in entry['data']]]
     
     fps = [d['filepath'] for entry in config for d in entry['data']
@@ -218,7 +218,7 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, c
 
     # all images must be same size
     dtypes = sorted({d['dtype'] for entry in config for d in entry['data']})
-    section_ids = [entry['id'] for entry in config]
+    section_ids = [entry['sid'] for entry in config]
 
     dtype_to_section_to_img = {}
     dtype_to_norm = {}

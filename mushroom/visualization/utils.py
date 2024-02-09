@@ -115,7 +115,7 @@ def display_sections(config, multiplex_cmap=None, gene='EPCAM', dtype_order=None
         
     for ax, dtype in zip(axs[:, 0], dtype_order):
         ax.set_ylabel(dtype)
-    for ax, sid in zip(axs[0, :], [item['id'] for item in config]):
+    for ax, sid in zip(axs[0, :], [item['sid'] for item in config]):
         ax.set_title(sid)
 
 

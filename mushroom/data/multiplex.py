@@ -135,6 +135,16 @@ def get_common_channels(filepaths, channel_mapping=None):
     channels = sorted([c for c, count in counts.items() if count==len(filepaths)])
     return channels
 
+def get_channel_counts(filepaths, channel_mapping=None):
+    channel_mapping = channel_mapping if channel_mapping is not None else {}
+    pool = []
+    for filepath in filepaths:
+        channels = get_ome_tiff_channels(filepath)
+        channels = [channel_mapping.get(c, c) for c in channels]
+        pool += channels
+    counts = Counter(pool)
+    return counts.most_common()
+
 
 def get_section_to_image(sid_to_filepaths, channels, channel_mapping=None, scale=.1, contrast_pct=95.):
     if channel_mapping is None:
