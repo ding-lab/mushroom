@@ -45,7 +45,7 @@ DEFAULT_CONFIG = {
         'target_resolution': .02, # grid width of 50 microns
         'pct_expression': .05,
         'batch_size': 128,
-        'num_workers': 1,
+        'num_workers': 0,
         'devices': 1,
         'accelerator': 'cpu',
         'max_epochs': 1,
@@ -106,10 +106,11 @@ class Mushroom(object):
                 if 'trainer_kwargs' in to_update:
                     spore_trainer_kwargs = utils.recursive_update(spore_trainer_kwargs, to_update['trainer_kwargs'])
 
-            res_scaler =  self.trainer_kwargs['target_resolution'] / spore_trainer_kwargs['target_resolution']
-            spore = Spore(dtype_sections, chkpt_filepath=chkpt_filepath, sae_kwargs=spore_sae_kwargs, trainer_kwargs=spore_trainer_kwargs, res_scaler=res_scaler)
+            spore = Spore(dtype_sections, chkpt_filepath=chkpt_filepath, sae_kwargs=spore_sae_kwargs, trainer_kwargs=spore_trainer_kwargs)
 
             self.dtype_to_spore[dtype] = spore
+
+        self.num_levels = len(self.sae_kwargs['num_clusters'])
 
         self.integrated_clusters = None
         self.dtype_to_volume, self.dtype_to_volume_probs = None, None
@@ -183,6 +184,14 @@ class Mushroom(object):
             spore = self.dtype_to_spore[dtype]
             spore.embed_sections()
 
+        # make sure all spores are the same neighborhood resolution
+        sizes = [spore.clusters[0].shape[-2:]]
+        idx = np.argmax([x[0] for x in sizes])
+        size = sizes[idx]
+        for dtype in dtypes:
+            spore = self.dtype_to_spore[dtype]
+            spore.resize_clusters(self, size=size)
+
     def save(self, output_dir=None):
         if output_dir is None:
             output_dir = self.trainer_kwargs['out_dir']
@@ -214,9 +223,15 @@ class Mushroom(object):
                 for level in range(len(next(iter(self.dtype_to_spore.values())).clusters))
             ]
         }
-        if self.integrated_clusters is not None:
+        if self.dtype_to_volume is not None:
+            dtype_to_cluster_intensities['dtype_projections'] = {
+                dtype: [
+                    self.calculate_cluster_intensities(level=level, projection_dtype=dtype) if self.integrated_clusters[level] is not None else None
+                    for level in range(self.num_levels)
+                ] for dtype, volume in self.dtype_to_volume.items()
+            }
             dtype_to_cluster_intensities['integrated'] = [
-                    self.calculate_cluster_intensities(use_integrated=True, level=level) if self.integrated_clusters[level] is not None else None
+                    self.calculate_cluster_intensities(level=level, projection_dtype='integrated') if self.integrated_clusters[level] is not None else None
                     for level in range(len(self.integrated_clusters))
             ]
 
@@ -240,16 +255,29 @@ class Mushroom(object):
             outputs
         )
 
-    def calculate_cluster_intensities(self, use_integrated=False, use_predicted=True, level=-1):
+    def calculate_cluster_intensities(self, use_predicted=True, level=-1, projection_dtype=None, dtype_to_volume=None):
+        if projection_dtype is not None:
+            assert self.dtype_to_volume is not None, 'Must generate volume first'
+
+        if dtype_to_volume is None:
+            dtype_to_volume = self.dtype_to_volume
+        
         dtype_to_df = {}
 
         for dtype, spore in self.dtype_to_spore.items():
-            if use_integrated:
-                assert self.integrated_clusters is not None, 'Must generate integrated volume first'
-                input_clusters = [c for c, (sid, dtype) in zip(self.integrated_clusters, self.section_ids) if dtype==dtype]
-                dtype_to_df[dtype] = spore.get_cluster_intensities(use_predicted=use_predicted, level=level, input_clusters=input_clusters)[dtype]
-            else:
+            if projection_dtype is None:
                 dtype_to_df[dtype] = spore.get_cluster_intensities(use_predicted=use_predicted, level=level)[dtype]
+            else:
+                clusters = np.stack([dtype_to_volume[projection_dtype][i] for i in self.section_positions])
+                clusters = repeat(clusters, '... -> n ...', n=self.num_levels)
+                # print(clusters.shape)
+                # print(dtype_to_volume[projection_dtype].shape, len(self.integrated_clusters), self.integrated_clusters[0].shape)
+                input_clusters = [c for c, (sid, dtype) in zip(clusters, self.section_ids) if dtype==dtype]
+                # print(len(input_clusters), input_clusters[0].shape)
+
+                # ic = [c for c, (sid, dtype) in zip(self.integrated_clusters, self.section_ids) if dtype==dtype]
+                # print(len(ic), ic[0].shape)
+                dtype_to_df[dtype] = spore.get_cluster_intensities(use_predicted=use_predicted, level=level, input_clusters=input_clusters)[dtype]
 
         return dtype_to_df
 
@@ -411,13 +439,11 @@ class Spore(object):
             chkpt_filepath=None,
             sae_kwargs=None,
             trainer_kwargs=None,
-            res_scaler=1.,
         ):
         self.sections = sections
         self.chkpt_filepath = chkpt_filepath
         self.sae_kwargs = sae_kwargs
         self.trainer_kwargs = trainer_kwargs
-        self.res_scaler = res_scaler
 
         self.channel_mapping = self.trainer_kwargs['channel_mapping']
         self.input_ppm = self.trainer_kwargs['input_resolution']
@@ -603,22 +629,30 @@ class Spore(object):
         self.cluster_probs_agg = [x.cpu().clone().detach().numpy() for x in formatted['cluster_probs']] # [level](n h w c) where c is n clusters for that level
         self.cluster_to_agg = [x for x in formatted['label_to_original']] # [level]d where d is dict mapping cluster label to original cluster
 
-        # self.cluster_probs - [level](n, h, w, *) where * is number of dims equal to num clusters for each level
-        # self.cluster_probs_all - [level](n, h, w, c) where c is total number of clusters in level
+        # self.cluster_probs_all - [level](n, h, w, *) where * is number of dims equal to num clusters for each level
+        # self.cluster_probs - [level](n, h, w, c) where c is total number of clusters in level
         self.cluster_probs, self.cluster_probs_all = self._calculate_probs()
 
-        print('predicted_pixels', len(self.predicted_pixels), len(self.predicted_pixels[0]), self.predicted_pixels[0][0].shape)
-        print('true_pixels', len(self.true_pixels), self.true_pixels[0].shape)
-        print('clusters', len(self.clusters), self.clusters[0].shape)
-        print('agg_clusters', len(self.agg_clusters), self.agg_clusters[0].shape)
-        print('cluster_probs_agg', len(self.cluster_probs_agg), self.cluster_probs_agg[0].shape)
-        print('cluster_to_agg', len(self.cluster_to_agg), self.cluster_to_agg[0])
+    
+    def resize_clusters(self, scale=1., size=None):
+        if size is None:
+            size = (int(self.clusters[0].shape[-2] * scale), int(self.clusters[0].shape[-1] * scale))
+        
+        self.true_pixels = [utils.rescale(x, size=size, dim_order='h w c', target_dtype=x.dtype)
+                            for x in self.true_pixels]
+        for level in range(len(self.clusters)):
+            self.predicted_pixels[level] = [
+                utils.rescale(x, size=size, dim_order='h w c', target_dtype=x.dtype)
+                for x in self.predicted_pixels[level]]
+            self.clusters[level] = utils.rescale(self.clusters[level], size=size, dim_order='c h w', target_dtype=self.clusters[level].dtype, antialias=False, interpolation=TF.InterpolationMode.NEAREST)
+            self.agg_clusters[level] = utils.rescale(self.agg_clusters[level], size=size, dim_order='c h w', target_dtype=self.agg_clusters[level].dtype, antialias=False, interpolation=TF.InterpolationMode.NEAREST)
+            self.cluster_probs_agg[level] = rearrange(utils.rescale(rearrange(self.cluster_probs_agg[level], 'n h w c -> n c h w'), size=size, dim_order='n c h w', target_dtype=self.cluster_probs_agg[level].dtype), 'n c h w -> n h w c')
+            self.cluster_probs[level] = rearrange(utils.rescale(rearrange(self.cluster_probs[level], 'n h w c -> n c h w'), size=size, dim_order='n c h w', target_dtype=self.cluster_probs[level].dtype), 'n c h w -> n h w c')
 
-        for level in range(3):
-            print('cluster_probs', len(self.cluster_probs), self.cluster_probs[level].shape, type(self.cluster_probs))
-            print('cluster_probs_all', len(self.cluster_probs_all), self.cluster_probs_all[level].shape, type(self.cluster_probs_all))
-
-        # rescale to match expected neighborhood resolution by Mushroom
+            kwargs = {c:i for c, i in zip(utils.CHARS, self.cluster_probs_all[level].shape[3:])}
+            chars = utils.CHARS[:len(kwargs)]
+            char_str = ' '.join(chars)
+            self.cluster_probs_all[level] = rearrange(utils.rescale(rearrange(self.cluster_probs_all[level], 'n h w ... -> n (...) h w'), size=size, dim_order='n c* h w', target_dtype=self.cluster_probs_all[level].dtype), f'n ({char_str}) h w -> n h w {char_str}', **kwargs)
 
 
     def get_cluster_intensities(self, use_predicted=True, level=-1, input_clusters=None):

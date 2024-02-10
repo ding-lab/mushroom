@@ -193,8 +193,18 @@ def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8,
     if size is None:
         size = (int(x.shape[-2] * scale), int(x.shape[-1] * scale))
 
+    dtype_map = { # quick and dirty dtype mapping for common np dtypes
+        np.uint8: torch.uint8,
+        np.float32: torch.float32,
+        np.float64: torch.float64,
+        np.int64: torch.int64,
+    }
+    target_dtype = dtype_map.get(target_dtype)
+
     x = TF.resize(x, size, antialias=antialias, interpolation=interpolation)
-    x = TF.convert_image_dtype(x, target_dtype)
+    
+    if x.dtype not in [torch.long, torch.int64, torch.int32]: # if its a labeled image this wont work
+        x = TF.convert_image_dtype(x, target_dtype)
 
     if dim_order == 'h w c':
         x = rearrange(x, 'c h w -> h w c')
