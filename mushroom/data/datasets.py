@@ -214,7 +214,7 @@ def get_points_section_to_img(
 
 
 
-def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, contrast_pct=None, pct_expression=.02):
+def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, contrast_pct=None, pct_expression=.02, data_mask=None):
 
     # all images must be same size
     dtypes = sorted({d['dtype'] for entry in config for d in entry['data']})
@@ -242,18 +242,26 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, c
             section_to_img, section_to_adata, norm, channels = get_points_section_to_img(config, ppm, target_ppm, channel_mapping=None, pct_expression=pct_expression)
         else:
             raise RuntimeError(f'dtype {dtype} is not a valid data type')
-        
+
         dtype_to_section_to_img[dtype] = section_to_img
         dtype_to_norm[dtype] = norm
         dtype_to_section_to_adata[dtype] = section_to_adata
         dtype_to_channels[dtype] = channels
 
     # image sizes are a few pixels off sometimes, adjusting for that
+    # also masking if we need to
     sizes = [(img.shape[-2], img.shape[-1]) for section_to_img in dtype_to_section_to_img.values() for img in section_to_img.values()]
     idx = np.argmax([np.sum(x) for x in sizes])
     target_size = sizes[idx]
+    if data_mask is not None:
+        data_mask = utils.rescale(data_mask, size=target_size, dim_order='h w', target_dtype=data_mask.dtype)
     for dtype, section_to_img in dtype_to_section_to_img.items():
         section_to_img = {sid:utils.rescale(img, size=target_size, dim_order='c h w', target_dtype=img.dtype) for sid, img in section_to_img.items()}
+
+        if data_mask is not None:
+            for sid, img in section_to_img.items():
+                img[:, ~data_mask] = img.min()
+
         dtype_to_section_to_img[dtype] = section_to_img
     assert len(set((img.shape[-2], img.shape[-1]) for section_to_img in dtype_to_section_to_img.values() for img in section_to_img.values())) == 1
 
@@ -275,6 +283,7 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, c
     
     learner_data = LearnerData(
         dtype_to_section_to_img=dtype_to_section_to_img,
+        dtype_to_section_to_adata=dtype_to_section_to_adata,
         train_transform=train_transform,
         inference_transform=inference_transform,
         train_ds=train_ds,
@@ -536,6 +545,7 @@ class ImageInferenceDataset(Dataset):
 @dataclass
 class LearnerData:
     dtype_to_section_to_img: Mapping
+    dtype_to_section_to_adata: Mapping
     train_transform: ImageTrainingTransform
     inference_transform: ImageInferenceTransform
     train_ds: ImageTrainingDataset

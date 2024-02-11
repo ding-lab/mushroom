@@ -4,6 +4,7 @@ import re
 
 import numpy as np
 import matplotlib.pyplot as plt
+import tifffile
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
@@ -198,12 +199,13 @@ def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8,
         np.float32: torch.float32,
         np.float64: torch.float64,
         np.int64: torch.int64,
+        bool: torch.bool,
     }
     target_dtype = dtype_map.get(target_dtype)
 
     x = TF.resize(x, size, antialias=antialias, interpolation=interpolation)
     
-    if x.dtype not in [torch.long, torch.int64, torch.int32]: # if its a labeled image this wont work
+    if x.dtype not in [torch.long, torch.int64, torch.int32, torch.bool]: # if its a labeled image this wont work
         x = TF.convert_image_dtype(x, target_dtype)
 
     if dim_order == 'h w c':
@@ -215,3 +217,17 @@ def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8,
         x = x.numpy()
     
     return x
+
+def read_mask(mask):
+    if isinstance(mask, str):
+        ext = mask.split('/')[-1].split('.')[-1]
+        if ext == 'tif':
+            mask = tifffile.imread(mask)
+        elif ext in ['npy', 'npz']:
+            mask = np.load(mask)
+        else:
+            raise RuntimeError(f'Extension {ext} is not supported for masks')
+    
+    return mask > 0
+    
+

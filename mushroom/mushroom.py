@@ -57,6 +57,7 @@ DEFAULT_CONFIG = {
         'logger_type': 'tensorboard',
         'logger_project': 'portobello',
         'channel_mapping': {},
+        'data_mask': None,
     },
 }
 
@@ -90,7 +91,6 @@ class Mushroom(object):
                 entry['data'] = [item for item in entry['data'] if item['dtype'] == dtype]
                 dtype_sections[i] = entry
             
-            # eventually add custom paramters for data types
             out_dir = self.trainer_kwargs['out_dir']
             trainer_kwargs['save_dir'] = os.path.join(out_dir, f'{dtype}_chkpts')
             trainer_kwargs['log_dir'] = os.path.join(out_dir, f'{dtype}_logs')
@@ -270,13 +270,7 @@ class Mushroom(object):
             else:
                 clusters = np.stack([dtype_to_volume[projection_dtype][i] for i in self.section_positions])
                 clusters = repeat(clusters, '... -> n ...', n=self.num_levels)
-                # print(clusters.shape)
-                # print(dtype_to_volume[projection_dtype].shape, len(self.integrated_clusters), self.integrated_clusters[0].shape)
                 input_clusters = [c for c, (sid, dtype) in zip(clusters, self.section_ids) if dtype==dtype]
-                # print(len(input_clusters), input_clusters[0].shape)
-
-                # ic = [c for c, (sid, dtype) in zip(self.integrated_clusters, self.section_ids) if dtype==dtype]
-                # print(len(ic), ic[0].shape)
                 dtype_to_df[dtype] = spore.get_cluster_intensities(use_predicted=use_predicted, level=level, input_clusters=input_clusters)[dtype]
 
         return dtype_to_df
@@ -445,6 +439,15 @@ class Spore(object):
         self.sae_kwargs = sae_kwargs
         self.trainer_kwargs = trainer_kwargs
 
+        # extract mask if it's there
+        if 'data_mask' in self.trainer_kwargs:
+            self.data_mask = utils.read_mask(self.trainer_kwargs['data_mask'])
+            self.trainer_kwargs.pop('data_mask')
+            logging.info('data mask detected')
+        else:
+            self.data_mask = None
+
+
         self.channel_mapping = self.trainer_kwargs['channel_mapping']
         self.input_ppm = self.trainer_kwargs['input_resolution']
         self.target_ppm = self.trainer_kwargs['target_resolution']
@@ -453,7 +456,7 @@ class Spore(object):
         self.sae_args = SAEargs(**self.sae_kwargs) if self.sae_kwargs is not None else {}
         self.size = (self.sae_args.size, self.sae_args.size)
         self.learner_data = get_learner_data(self.sections, self.input_ppm, self.target_ppm, self.sae_args.size,
-                                             channel_mapping=self.channel_mapping, pct_expression=self.pct_expression)
+                                             channel_mapping=self.channel_mapping, pct_expression=self.pct_expression, data_mask=self.data_mask)
         self.section_ids = self.learner_data.train_ds.section_ids
         self.dtypes = self.learner_data.dtypes
         self.dtype_to_channels = self.learner_data.dtype_to_channels
@@ -632,6 +635,10 @@ class Spore(object):
         # self.cluster_probs_all - [level](n, h, w, *) where * is number of dims equal to num clusters for each level
         # self.cluster_probs - [level](n, h, w, c) where c is total number of clusters in level
         self.cluster_probs, self.cluster_probs_all = self._calculate_probs()
+
+        # trim extra section if dealing with singleton
+        # also adjust sids and other attbs
+        ### todo
 
     
     def resize_clusters(self, scale=1., size=None):
