@@ -47,7 +47,7 @@ def generate_norm_transform(section_to_img):
     normalize = Normalize(means, stds)
     return normalize
 
-def get_multiplex_section_to_img(config, ppm, target_ppm, channels=None, channel_mapping=None, contrast_pct=None):
+def get_multiplex_section_to_img(config, ppm, target_ppm, channels=None, channel_mapping=None, contrast_pct=None, **kwargs):
     logging.info(f'starting multiplex processing')
     sid_to_filepaths, section_ids, fps = get_config_info(config, 'multiplex')
 
@@ -65,11 +65,10 @@ def get_multiplex_section_to_img(config, ppm, target_ppm, channels=None, channel
     
     return section_to_img, normalize, channels
 
-def get_he_section_to_img(config, ppm, target_ppm):
+def get_he_section_to_img(config, ppm, target_ppm, **kwargs):
     logging.info(f'starting he processing')
     sid_to_filepaths, section_ids, fps = get_config_info(config, 'he')
 
-    # channels = np.asarray(['red', 'green', 'blue'])
     channels = ['red', 'green', 'blue']
 
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
@@ -83,7 +82,7 @@ def get_he_section_to_img(config, ppm, target_ppm):
     return section_to_img, normalize, channels
 
 def get_xenium_section_to_img(
-        config, ppm, target_ppm, channels=None, channel_mapping=None
+        config, ppm, target_ppm, channels=None, channel_mapping=None, tiling_method='grid', tiling_radius=1., log_base=np.e, **kwargs
     ):
     logging.info(f'starting xenium processing')
     sid_to_filepaths, section_ids, fps = get_config_info(config, 'xenium')
@@ -98,14 +97,14 @@ def get_xenium_section_to_img(
     logging.info(f'processing sections')
     tiling_size = int(ppm / target_ppm)
     section_to_adata = {
-        sid:xenium.adata_from_xenium(fp, normalize=True)
+        sid:xenium.adata_from_xenium(fp, normalize=True, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
 
     section_to_img = {}
     for sid, adata in section_to_adata.items():
         logging.info(f'generating image data for section {sid}')
-        img = xenium.to_multiplex(adata, tiling_size=tiling_size, method='grid')
+        img = xenium.to_multiplex(adata, tiling_size=tiling_size, method=tiling_method, radius_sf=tiling_radius)
         img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
         section_to_img[sid] = img
    
@@ -114,7 +113,7 @@ def get_xenium_section_to_img(
     return section_to_img, section_to_adata, normalize, channels
 
 def get_cosmx_section_to_img(
-        config, ppm, target_ppm, channels=None, channel_mapping=None
+        config, ppm, target_ppm, channels=None, channel_mapping=None, tiling_method='grid', tiling_radius=1., log_base=np.e, **kwargs
     ):
     logging.info(f'starting cosmx processing')
     sid_to_filepaths, section_ids, fps = get_config_info(config, 'cosmx')
@@ -129,14 +128,14 @@ def get_cosmx_section_to_img(
     logging.info(f'processing sections')
     tiling_size = int(ppm / target_ppm)
     section_to_adata = {
-        sid:cosmx.adata_from_cosmx(fp, normalize=True)
+        sid:cosmx.adata_from_cosmx(fp, normalize=True, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
 
     section_to_img = {}
     for sid, adata in section_to_adata.items():
         logging.info(f'generating image data for section {sid}')
-        img = cosmx.to_multiplex(adata, tiling_size=tiling_size, method='grid')
+        img = cosmx.to_multiplex(adata, tiling_size=tiling_size, method=tiling_method, radius_sf=tiling_radius)
         img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
         section_to_img[sid] = img
    
@@ -145,7 +144,7 @@ def get_cosmx_section_to_img(
     return section_to_img, section_to_adata, normalize, channels
 
 def get_visium_section_to_img(
-        config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02,
+        config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02, tiling_method='radius', tiling_radius=1., log_base=np.e, **kwargs
     ):
     logging.info(f'starting visium processing')
     sid_to_filepaths, section_ids, fps = get_config_info(config, 'visium')
@@ -161,7 +160,7 @@ def get_visium_section_to_img(
     logging.info(f'processing sections')
     tiling_size = int(ppm / target_ppm)
     section_to_adata = {
-        sid:visium.adata_from_visium(fp, normalize=True)
+        sid:visium.adata_from_visium(fp, normalize=True, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
 
@@ -170,7 +169,7 @@ def get_visium_section_to_img(
     section_to_img = {}
     for sid, adata in section_to_adata.items():
         logging.info(f'generating image data for section {sid}')
-        img = visium.to_multiplex(adata, tiling_size=tiling_size)
+        img = visium.to_multiplex(adata, tiling_size=tiling_size, method=tiling_method, radius_sf=tiling_radius)
         img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
         section_to_img[sid] = img
    
@@ -179,7 +178,7 @@ def get_visium_section_to_img(
     return section_to_img, section_to_adata, normalize, channels
 
 def get_points_section_to_img(
-        config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02,
+        config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02, tiling_method='grid', tiling_radius=1., log_base=np.e, **kwargs
     ):
     logging.info(f'starting points processing')
     sid_to_filepaths, section_ids, fps = get_config_info(config, 'points')
@@ -195,7 +194,7 @@ def get_points_section_to_img(
     logging.info(f'processing sections')
     tiling_size = int(ppm / target_ppm)
     section_to_adata = {
-        sid:user_points.adata_from_point_based(fp, normalize=True)
+        sid:user_points.adata_from_point_based(fp, normalize=True, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
 
@@ -204,7 +203,7 @@ def get_points_section_to_img(
     section_to_img = {}
     for sid, adata in section_to_adata.items():
         logging.info(f'generating image data for section {sid}')
-        img = user_points.to_multiplex(adata, tiling_size=tiling_size)
+        img = user_points.to_multiplex(adata, tiling_size=tiling_size, method=tiling_method, radius_sf=tiling_radius)
         img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
         section_to_img[sid] = img
    
@@ -214,8 +213,7 @@ def get_points_section_to_img(
 
 
 
-def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, contrast_pct=None, pct_expression=.02, data_mask=None):
-
+def get_learner_data(config, ppm, target_ppm, tile_size, data_mask=None, **kwargs):
     # all images must be same size
     dtypes = sorted({d['dtype'] for entry in config for d in entry['data']})
     section_ids = [entry['sid'] for entry in config]
@@ -227,19 +225,19 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, c
 
     for dtype in dtypes:
         if dtype == 'multiplex':
-            section_to_img, norm, channels = get_multiplex_section_to_img(config, ppm, target_ppm, channel_mapping=channel_mapping, contrast_pct=contrast_pct)
+            section_to_img, norm, channels = get_multiplex_section_to_img(config, ppm, target_ppm, **kwargs)
             section_to_adata = None
         elif dtype == 'he':
-            section_to_img, norm, channels = get_he_section_to_img(config, ppm, target_ppm)
+            section_to_img, norm, channels = get_he_section_to_img(config, ppm, target_ppm, **kwargs)
             section_to_adata = None
         elif dtype == 'xenium':
-            section_to_img, section_to_adata, norm, channels = get_xenium_section_to_img(config, ppm, target_ppm, channel_mapping=None)
+            section_to_img, section_to_adata, norm, channels = get_xenium_section_to_img(config, ppm, target_ppm, **kwargs)
         elif dtype == 'cosmx':
-            section_to_img, section_to_adata, norm, channels = get_cosmx_section_to_img(config, ppm, target_ppm, channel_mapping=None)
+            section_to_img, section_to_adata, norm, channels = get_cosmx_section_to_img(config, ppm, target_ppm, **kwargs)
         elif dtype == 'visium':
-            section_to_img, section_to_adata, norm, channels = get_visium_section_to_img(config, ppm, target_ppm, channel_mapping=None, pct_expression=pct_expression)
+            section_to_img, section_to_adata, norm, channels = get_visium_section_to_img(config, ppm, target_ppm, **kwargs)
         elif dtype == 'points':
-            section_to_img, section_to_adata, norm, channels = get_points_section_to_img(config, ppm, target_ppm, channel_mapping=None, pct_expression=pct_expression)
+            section_to_img, section_to_adata, norm, channels = get_points_section_to_img(config, ppm, target_ppm, **kwargs)
         else:
             raise RuntimeError(f'dtype {dtype} is not a valid data type')
 

@@ -479,11 +479,15 @@ class Spore(object):
         self.input_ppm = self.trainer_kwargs['input_resolution']
         self.target_ppm = self.trainer_kwargs['target_resolution']
         self.pct_expression = self.trainer_kwargs['pct_expression']
+        self.tiling_method = self.trainer_kwargs['tiling_method']
+        self.tiling_radius = self.trainer_kwargs['tiling_radius']
+        self.log_base = self.trainer_kwargs['log_base']
 
         self.sae_args = SAEargs(**self.sae_kwargs) if self.sae_kwargs is not None else {}
         self.size = (self.sae_args.size, self.sae_args.size)
         self.learner_data = get_learner_data(self.sections, self.input_ppm, self.target_ppm, self.sae_args.size,
-                                             channel_mapping=self.channel_mapping, pct_expression=self.pct_expression, data_mask=self.data_mask)
+                                             channel_mapping=self.channel_mapping, pct_expression=self.pct_expression, data_mask=self.data_mask,
+                                             tiling_method=self.tiling_method, tiling_radius=self.tiling_radius, log_base=self.log_base)
         self.section_ids = self.learner_data.train_ds.section_ids
         self.dtypes = self.learner_data.dtypes
         self.dtype_to_channels = self.learner_data.dtype_to_channels
