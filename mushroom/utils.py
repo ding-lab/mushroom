@@ -227,7 +227,8 @@ def read_mask(mask):
             mask = np.load(mask)
         else:
             raise RuntimeError(f'Extension {ext} is not supported for masks')
-    
-    return mask > 0
+
+    if mask is not None:
+        return mask > 0
     
 

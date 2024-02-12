@@ -12,9 +12,6 @@ X_COL = 'x'
 Y_COL = 'y'
 
 def adata_from_point_based(df, normalize=False, base=np.e):
-    assert X_COL in df.columns, f'x coordinates must be specfied under the column name "{X_COL}"'
-    assert Y_COL in df.columns, f'y coordinates must be specfied under the column name "{Y_COL}"'
-    assert CELL_COL in df.columns and len(set(df[CELL_COL]))==df.shape[0], f'cell ids must be unique and specfied under the column name "{CELL_COL}"'
     adata = None
     if isinstance(df, str):
         ext = df.split('/')[-1].split('.')[-1]
@@ -24,6 +21,10 @@ def adata_from_point_based(df, normalize=False, base=np.e):
             df = pd.read_csv(df)
         else:
             raise RuntimeError(f'If supplying filepath to datatable extension must be .csv')
+    
+    assert X_COL in df.columns, f'x coordinates must be specfied under the column name "{X_COL}"'
+    assert Y_COL in df.columns, f'y coordinates must be specfied under the column name "{Y_COL}"'
+    assert CELL_COL in df.columns and len(set(df[CELL_COL]))==df.shape[0], f'cell ids must be unique and specfied under the column name "{CELL_COL}"'
     
     if adata is None:
         coords = df[[X_COL, Y_COL]].values.astype(int)

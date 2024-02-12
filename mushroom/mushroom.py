@@ -29,7 +29,13 @@ import mushroom.utils as utils
 DEFAULT_CONFIG = {
     'sections': None,
     'dtype_to_chkpt': None,
-    'dtype_specific_params': None,
+    'dtype_specific_params': {
+        'visium': {
+            'trainer_kwargs': {
+                'tiling_method': 'radius',
+            }
+        },
+    },
     'sae_kwargs': {
         'size': 8,
         'patch_size': 1,
@@ -44,6 +50,9 @@ DEFAULT_CONFIG = {
         'input_resolution': 1.,
         'target_resolution': .02, # grid width of 50 microns
         'pct_expression': .05,
+        'log_base': np.e,
+        'tiling_method': 'grid',
+        'tiling_radius': 1.,
         'batch_size': 128,
         'num_workers': 0,
         'devices': 1,
@@ -269,8 +278,8 @@ class Mushroom(object):
                 dtype_to_df[dtype] = spore.get_cluster_intensities(use_predicted=use_predicted, level=level)[dtype]
             else:
                 clusters = np.stack([dtype_to_volume[projection_dtype][i] for i in self.section_positions])
-                clusters = repeat(clusters, '... -> n ...', n=self.num_levels)
-                input_clusters = [c for c, (sid, dtype) in zip(clusters, self.section_ids) if dtype==dtype]
+                input_clusters = np.stack([c for c, (_, dt) in zip(clusters, self.section_ids) if dt==dtype])
+                input_clusters = [input_clusters for i in range(self.num_levels)]
                 dtype_to_df[dtype] = spore.get_cluster_intensities(use_predicted=use_predicted, level=level, input_clusters=input_clusters)[dtype]
 
         return dtype_to_df
@@ -375,9 +384,14 @@ class Mushroom(object):
             volumes = [v[positions] for v in volumes]
 
         ncols = len(volumes)
+        nrows = volumes[0].shape[0]
         if figsize is None:
-            figsize = (ncols, volumes[0].shape[0])
-        fig, axs = plt.subplots(nrows=volumes[0].shape[0], ncols=ncols, figsize=figsize)
+            figsize = (ncols, nrows)
+        fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
+        if nrows == 1:
+            axs = rearrange(axs, 'n -> 1 n')
+        if ncols == 1 and nrows != 1:
+            axs = rearrange(axs, 'n -> n 1')
         for i in range(volumes[0].shape[0]):
             for j, volume in enumerate(volumes):
                 ax = axs[i, j]
@@ -434,6 +448,18 @@ class Spore(object):
             sae_kwargs=None,
             trainer_kwargs=None,
         ):
+        # if singleton section, add a duplicate
+        # will be adjusted back to single section after embedding
+        if len(sections) == 1:
+            logging.info('singleton section detected, creating temporary duplicate')
+            entry = deepcopy(sections[0])
+            entry['position'] += 1
+            entry['sid'] = entry['sid'] + '_dup'
+            sections.append(entry)
+            self.is_singleton = True
+        else:
+            self.is_singleton = False
+
         self.sections = sections
         self.chkpt_filepath = chkpt_filepath
         self.sae_kwargs = sae_kwargs
@@ -446,6 +472,7 @@ class Spore(object):
             logging.info('data mask detected')
         else:
             self.data_mask = None
+        
 
 
         self.channel_mapping = self.trainer_kwargs['channel_mapping']
@@ -623,22 +650,26 @@ class Spore(object):
         self.trainer.fit(self.model, self.train_dl)
 
     def embed_sections(self):
+        n = len(self.section_ids)
+        if self.is_singleton:
+            self.section_ids = self.section_ids[:-1]
+            self.sections = self.sections[:-1]
+            n -= 1
+    
         outputs = self.trainer.predict(self.model, self.inference_dl)
         formatted = self.model.format_prediction_outputs(outputs)
-        self.predicted_pixels = [[z.cpu().clone().detach().numpy() for z in x] for x in formatted['predicted_pixels']] # [level][n](h w c)
-        self.true_pixels = [x.cpu().clone().detach().numpy() for x in formatted['true_pixels']] # [n](h w c)
-        self.clusters = [x for x in formatted['clusters']] # [level](n h w)
-        self.agg_clusters = [x.cpu().clone().detach().numpy().astype(int) for x in formatted['agg_clusters']] # [level](n h w)
-        self.cluster_probs_agg = [x.cpu().clone().detach().numpy() for x in formatted['cluster_probs']] # [level](n h w c) where c is n clusters for that level
+        self.predicted_pixels = [[z.cpu().clone().detach().numpy() for z in x[:n]] for x in formatted['predicted_pixels']] # [level][n](h w c)
+        self.true_pixels = [x.cpu().clone().detach().numpy() for x in formatted['true_pixels'][:n]] # [n](h w c)
+        self.clusters = [x[:n] for x in formatted['clusters']] # [level](n h w)
+        self.agg_clusters = [x[:n].cpu().clone().detach().numpy().astype(int) for x in formatted['agg_clusters']] # [level](n h w)
+        self.cluster_probs_agg = [x[:n].cpu().clone().detach().numpy() for x in formatted['cluster_probs']] # [level](n h w c) where c is n clusters for that level
         self.cluster_to_agg = [x for x in formatted['label_to_original']] # [level]d where d is dict mapping cluster label to original cluster
 
         # self.cluster_probs_all - [level](n, h, w, *) where * is number of dims equal to num clusters for each level
         # self.cluster_probs - [level](n, h, w, c) where c is total number of clusters in level
         self.cluster_probs, self.cluster_probs_all = self._calculate_probs()
-
-        # trim extra section if dealing with singleton
-        # also adjust sids and other attbs
-        ### todo
+        self.cluster_probs_all = [x[:n] for x in self.cluster_probs_all]
+        self.cluster_probs = [x[:n] for x in self.cluster_probs]
 
     
     def resize_clusters(self, scale=1., size=None):
@@ -745,6 +776,10 @@ class Spore(object):
             ncols=cluster_probs.shape[0],
             figsize=(cluster_probs.shape[0], cluster_probs.shape[-1])
         )
+        if cluster_probs.shape[-1] == 1:
+            axs = rearrange(axs, 'n -> 1 n')
+        if cluster_probs.shape[0] == 1 and cluster_probs.shape[-1] != 1:
+            axs = rearrange(axs, 'n -> n 1')
         for c in range(cluster_probs.shape[0]):
             for r in range(cluster_probs.shape[-1]):
                 ax = axs[r, c]
