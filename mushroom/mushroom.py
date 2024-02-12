@@ -138,6 +138,9 @@ class Mushroom(object):
         else:
             mushroom_config = input
             outputs = None
+        
+        # confirm sections are in order of position
+        mushroom_config['sections'] = sorted(mushroom_config['sections'], key=lambda x: x['position'])
 
         if accelerator is not None:
             mushroom_config['trainer_kwargs']['accelerator'] = accelerator

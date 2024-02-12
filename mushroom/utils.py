@@ -60,7 +60,7 @@ def parse_dtype(dtype_identifier):
         parsed = dtype_identifier.split('_')[-1]
 
     if parsed not in DTYPES:
-        raise RuntimeError(f'{parsed} is not a valid dtype string. valid data identifiers are either {DTYPES} or "[string]_[dtype]" where string can be any filepath-safe string and dtype must in {DTYPES}')
+        raise RuntimeError(f'{dtype_identifier} was supplied and its parsed form {parsed} is not a valid dtype string. valid data identifiers are either {DTYPES} or "[string]_[dtype]" where [string] can be any filepath-safe string and [dtype] must in {DTYPES}')
     
     return parsed
 

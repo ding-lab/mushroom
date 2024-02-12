@@ -51,8 +51,8 @@ def merge_volumes(volumes, are_probs=False, kernel=None, kernel_size=5, block_si
     smoothed = utils.smooth_probabilities(probs, kernel=kernel, kernel_size=kernel_size) # (n h w nclusters)
 
     chars = utils.CHARS[:len(smoothed)]
-    ein_exp = ','.join([f'nhw{x}' for x in chars])
-    ein_exp += f'->nhw{chars}'
+    ein_exp = ','.join([f'NHW{x}' for x in chars]) # caps to prevent char overlaps
+    ein_exp += f'->NHW{chars}'
 
     orig_shape = smoothed[0].shape
     n, h, w = orig_shape[:3]

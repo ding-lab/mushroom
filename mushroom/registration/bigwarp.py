@@ -240,23 +240,23 @@ def display_data_map(data_map, multiplex_channel='DAPI', vis_scale=.1, gamma=1.,
             dtype, filepath = mapping['dtype'], mapping['filepath']
             print(sid, dtype)
             ax = axs[i, j]
-            
-            if dtype == 'visium':
+            parsed_dtype = utils.parse_dtype(dtype)
+            if parsed_dtype == 'visium':
                 adata = visium.adata_from_visium(filepath)
                 display_adata(adata, scale=vis_scale, method='points', ax=ax)
-            elif dtype == 'xenium':
+            elif parsed_dtype == 'xenium':
                 adata = xenium.adata_from_xenium(filepath)
                 display_adata(adata, scale=vis_scale, method='points', ax=ax, gamma=gamma)
-            elif dtype == 'cosmx':
+            elif parsed_dtype == 'cosmx':
                 adata = cosmx.adata_from_cosmx(filepath)
                 display_adata(adata, scale=vis_scale, method='points', ax=ax, gamma=gamma)
-            elif dtype == 'multiplex':
+            elif parsed_dtype == 'multiplex':
                 img = multiplex.extract_ome_tiff(
                     filepath, channels=[multiplex_channel], scale=vis_scale
                 )[multiplex_channel]
                 img = adjust_gamma(img, gamma)
                 ax.imshow(img)
-            elif dtype == 'he':
+            elif parsed_dtype == 'he':
                 img = he.read_he(filepath, scale=vis_scale)
                 ax.imshow(img)
             ax.set_title(dtype)

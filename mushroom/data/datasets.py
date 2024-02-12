@@ -19,11 +19,8 @@ import mushroom.data.cosmx as cosmx
 import mushroom.data.user_points as user_points
 import mushroom.utils as utils
 
-DTYPES = utils.DTYPES
-
 
 def get_config_info(config, name):
-    assert name in DTYPES, f'data type must be one of {DTYPES}, got {name}'
     sid_to_filepaths = {
         entry['sid']:d['filepath'] for entry in config for d in entry['data']
         if d['dtype']==name
@@ -47,9 +44,9 @@ def generate_norm_transform(section_to_img):
     normalize = Normalize(means, stds)
     return normalize
 
-def get_multiplex_section_to_img(config, ppm, target_ppm, channels=None, channel_mapping=None, contrast_pct=None, **kwargs):
-    logging.info(f'starting multiplex processing')
-    sid_to_filepaths, section_ids, fps = get_config_info(config, 'multiplex')
+def get_multiplex_section_to_img(dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, contrast_pct=None, **kwargs):
+    logging.info(f'starting {dtype_identifier} processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
 
     if channels is None:
         channels = multiplex.get_common_channels(fps, channel_mapping=channel_mapping)
@@ -65,9 +62,9 @@ def get_multiplex_section_to_img(config, ppm, target_ppm, channels=None, channel
     
     return section_to_img, normalize, channels
 
-def get_he_section_to_img(config, ppm, target_ppm, **kwargs):
-    logging.info(f'starting he processing')
-    sid_to_filepaths, section_ids, fps = get_config_info(config, 'he')
+def get_he_section_to_img(dtype_identifier, config, ppm, target_ppm, **kwargs):
+    logging.info(f'starting {dtype_identifier} processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
 
     channels = ['red', 'green', 'blue']
 
@@ -82,10 +79,10 @@ def get_he_section_to_img(config, ppm, target_ppm, **kwargs):
     return section_to_img, normalize, channels
 
 def get_xenium_section_to_img(
-        config, ppm, target_ppm, channels=None, channel_mapping=None, tiling_method='grid', tiling_radius=1., log_base=np.e, **kwargs
+        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, tiling_method='grid', tiling_radius=1., log_base=np.e, **kwargs
     ):
-    logging.info(f'starting xenium processing')
-    sid_to_filepaths, section_ids, fps = get_config_info(config, 'xenium')
+    logging.info(f'starting {dtype_identifier} processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
 
     if channels is None:
         channels = xenium.get_common_channels(
@@ -113,10 +110,10 @@ def get_xenium_section_to_img(
     return section_to_img, section_to_adata, normalize, channels
 
 def get_cosmx_section_to_img(
-        config, ppm, target_ppm, channels=None, channel_mapping=None, tiling_method='grid', tiling_radius=1., log_base=np.e, **kwargs
+        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, tiling_method='grid', tiling_radius=1., log_base=np.e, **kwargs
     ):
-    logging.info(f'starting cosmx processing')
-    sid_to_filepaths, section_ids, fps = get_config_info(config, 'cosmx')
+    logging.info(f'starting {dtype_identifier} processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
 
     if channels is None:
         channels = cosmx.get_common_channels(
@@ -144,10 +141,10 @@ def get_cosmx_section_to_img(
     return section_to_img, section_to_adata, normalize, channels
 
 def get_visium_section_to_img(
-        config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02, tiling_method='radius', tiling_radius=1., log_base=np.e, **kwargs
+        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02, tiling_method='radius', tiling_radius=1., log_base=np.e, **kwargs
     ):
-    logging.info(f'starting visium processing')
-    sid_to_filepaths, section_ids, fps = get_config_info(config, 'visium')
+    logging.info(f'starting {dtype_identifier} processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
 
     if channels is None:
         channels = visium.get_common_channels(
@@ -178,10 +175,10 @@ def get_visium_section_to_img(
     return section_to_img, section_to_adata, normalize, channels
 
 def get_points_section_to_img(
-        config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02, tiling_method='grid', tiling_radius=1., log_base=np.e, **kwargs
+        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02, tiling_method='grid', tiling_radius=1., log_base=np.e, **kwargs
     ):
-    logging.info(f'starting points processing')
-    sid_to_filepaths, section_ids, fps = get_config_info(config, 'points')
+    logging.info(f'starting {dtype_identifier} processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
 
     if channels is None:
         channels = user_points.get_common_channels(
@@ -224,20 +221,21 @@ def get_learner_data(config, ppm, target_ppm, tile_size, data_mask=None, **kwarg
     dtype_to_channels = {}
 
     for dtype in dtypes:
-        if dtype == 'multiplex':
-            section_to_img, norm, channels = get_multiplex_section_to_img(config, ppm, target_ppm, **kwargs)
+        parsed_dtype = utils.parse_dtype(dtype)
+        if parsed_dtype == 'multiplex':
+            section_to_img, norm, channels = get_multiplex_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
             section_to_adata = None
-        elif dtype == 'he':
-            section_to_img, norm, channels = get_he_section_to_img(config, ppm, target_ppm, **kwargs)
+        elif parsed_dtype == 'he':
+            section_to_img, norm, channels = get_he_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
             section_to_adata = None
-        elif dtype == 'xenium':
-            section_to_img, section_to_adata, norm, channels = get_xenium_section_to_img(config, ppm, target_ppm, **kwargs)
-        elif dtype == 'cosmx':
-            section_to_img, section_to_adata, norm, channels = get_cosmx_section_to_img(config, ppm, target_ppm, **kwargs)
-        elif dtype == 'visium':
-            section_to_img, section_to_adata, norm, channels = get_visium_section_to_img(config, ppm, target_ppm, **kwargs)
-        elif dtype == 'points':
-            section_to_img, section_to_adata, norm, channels = get_points_section_to_img(config, ppm, target_ppm, **kwargs)
+        elif parsed_dtype == 'xenium':
+            section_to_img, section_to_adata, norm, channels = get_xenium_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
+        elif parsed_dtype == 'cosmx':
+            section_to_img, section_to_adata, norm, channels = get_cosmx_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
+        elif parsed_dtype == 'visium':
+            section_to_img, section_to_adata, norm, channels = get_visium_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
+        elif parsed_dtype == 'points':
+            section_to_img, section_to_adata, norm, channels = get_points_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
         else:
             raise RuntimeError(f'dtype {dtype} is not a valid data type')
 
