@@ -95,7 +95,7 @@ def warp_pts(pts, ddf):
     img = warp_image(img, ddf)
 
     objects = ndi.find_objects(img.numpy())
-    label_to_warped_pt = {}
+    label_to_warped_pt = {} 
     for i, obj in enumerate(objects):
         if obj is None:
             continue
@@ -221,19 +221,24 @@ def display_adata(adata, method='both', key='hires', scale=1., ax=None, gamma=1.
         ax.scatter(pts[:, 0], pts[:, 1], s=s, c='orange')
         if method == 'points':
             ax.invert_yaxis()
-
-
-def display_data_map(data_map, multiplex_channel='DAPI', vis_scale=.1, gamma=1., figsize=None):
+ 
+ 
+def display_data_map(data_map, multiplex_channel='DAPI', vis_scale=.1, gamma=1., figsize=None, share_axis=False):
     # for sample, mapping in data_map.items():
         # order = mapping['order']
         # sid_to_dtypes = {}
         # for sid in order:
         #     sid_to_dtypes[sid] = [dtype for dtype, entries in mapping['data'].items() if sid in entries]
-        
+    target_section = data_map['target_sid']
+    target_size = None
     nrows, ncols = len(data_map['sections']), max([len(item['data']) for item in data_map['sections']])
     if figsize is None:
         figsize = (ncols, nrows)
     fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
+
+    if ncols == 1:
+        axs = rearrange(axs, 'n -> n 1')
+
     for i, item in enumerate(data_map['sections']):
         sid = item['sid']
         for j, mapping in enumerate(item['data']):
@@ -241,6 +246,7 @@ def display_data_map(data_map, multiplex_channel='DAPI', vis_scale=.1, gamma=1.,
             print(sid, dtype)
             ax = axs[i, j]
             parsed_dtype = utils.parse_dtype(dtype)
+            img, adata = None, None
             if parsed_dtype == 'visium':
                 adata = visium.adata_from_visium(filepath)
                 display_adata(adata, scale=vis_scale, method='points', ax=ax)
@@ -262,11 +268,23 @@ def display_data_map(data_map, multiplex_channel='DAPI', vis_scale=.1, gamma=1.,
             ax.set_title(dtype)
             if j == 0:
                 ax.set_ylabel(sid, rotation=90)
+        
+        if sid == target_section:
+            if img is not None:
+                target_size = img.shape[:2]
+            else:
+                target_size = visium.get_fullres_size(adata)
+
     for ax in axs.flatten():
+
         ax.axis('equal')
+        if share_axis:
+            ax.set_ylim(0, target_size[0])
+            ax.set_xlim(0, target_size[1])
         ax.set_xticks([])
         ax.set_yticks([])
         ax.title.set_fontsize(6)
         ax.yaxis.label.set_fontsize(6)
+
 
         

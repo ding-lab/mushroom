@@ -39,12 +39,12 @@ def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict'
                 r1, r2, c1, c2 = bbox
                 img = img[r1:r2, c1:c2]
 
-            d[c.name] = img
-
             if scale is not None:
                 img = torch.tensor(img).unsqueeze(0)
                 target_size = [int(x * scale) for x in img.shape[-2:]]
-                img = TF.resize(img, size=target_size, antialias=True).squeeze()
+                img = TF.resize(img, size=target_size, antialias=True).squeeze().numpy()
+            
+            d[c.name] = img
 
             imgs.append(img)
             img_channels.append(c.name)
@@ -57,7 +57,7 @@ def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict'
 
     if as_dict:
         return d
-
+    
     return img_channels, np.stack(imgs)
 
 
