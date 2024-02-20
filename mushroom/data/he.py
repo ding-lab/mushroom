@@ -48,8 +48,10 @@ def read_he(filepath, scale=None):
     if img.shape[-1] == 3:
         img = rearrange(img, 'h w c -> c h w')
         dim_order = 'h w c'
-    else:
+    elif img.shape[0] == 3:
         dim_order = 'c h w'
+    else:
+        raise RuntimeError(f'Dimensions of {img.shape} are not valid HE dimensions. Must be (3, height, width) or (height, width, 3)')
 
     if scale is not None:
         img = torch.tensor(img)

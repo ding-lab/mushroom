@@ -39,6 +39,12 @@ def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict'
                 r1, r2, c1, c2 = bbox
                 img = img[r1:r2, c1:c2]
 
+            if img.dtype != np.uint8:
+                img = img.astype(np.float32)
+                img /= img.max()
+                img *= 255.
+                img = img.astype(np.uint8)
+
             if scale is not None:
                 img = torch.tensor(img).unsqueeze(0)
                 target_size = [int(x * scale) for x in img.shape[-2:]]
