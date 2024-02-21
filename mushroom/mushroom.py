@@ -214,6 +214,7 @@ class Mushroom(object):
         config = {
             'sections': self.sections,
             'dtype_to_chkpt': self.dtype_to_chkpt,
+            'dtype_specific_params': self.dtype_specific_params,
             'sae_kwargs': self.sae_kwargs,
             'trainer_kwargs': self.trainer_kwargs
         }
