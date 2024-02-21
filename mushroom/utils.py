@@ -205,7 +205,7 @@ def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8,
 
     x = TF.resize(x, size, antialias=antialias, interpolation=interpolation)
     
-    if x.dtype not in [torch.long, torch.int64, torch.int32, torch.bool] and x.dtype != target_dtype: # if its a labeled image this wont work
+    if x.dtype not in [torch.long, torch.int64, torch.int32, torch.bool, torch.float32, torch.float64] and x.dtype != target_dtype: # if its a labeled image this wont work
         x = TF.convert_image_dtype(x, target_dtype)
 
     if dim_order == 'h w c':
