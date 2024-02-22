@@ -97,6 +97,7 @@ def get_xenium_section_to_img(
         sid:xenium.adata_from_xenium(fp, normalize=True, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
+    section_to_adata = {sid:adata[:, channels] for sid, adata in section_to_adata.items()}
 
     section_to_img = {}
     for sid, adata in section_to_adata.items():
@@ -128,6 +129,7 @@ def get_cosmx_section_to_img(
         sid:cosmx.adata_from_cosmx(fp, normalize=True, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
+    section_to_adata = {sid:adata[:, channels] for sid, adata in section_to_adata.items()}
 
     section_to_img = {}
     for sid, adata in section_to_adata.items():
@@ -160,7 +162,6 @@ def get_visium_section_to_img(
         sid:visium.adata_from_visium(fp, normalize=True, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
-
     section_to_adata = {sid:adata[:, channels] for sid, adata in section_to_adata.items()}
 
     section_to_img = {}
