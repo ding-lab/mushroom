@@ -43,8 +43,9 @@ def read_he(filepath, scale=None):
     if ext in ['tif', 'svs']:
         img = tifffile.imread(filepath)
     else:
-        logging.warning(f'File extension {ext} may not by fully supported extensions. Fully supported extensions are .tif or .svs')
+        logging.warning(f'File extension {ext} is not .tif or .svs, attempting to open but may cause errors')
         # raise RuntimeError(f'File extension {ext} not supported for H&E. Supported extensions are .tif or .svs')
+        img = tifffile.imread(filepath)
     
     if img.shape[-1] == 3:
         img = rearrange(img, 'h w c -> c h w')
