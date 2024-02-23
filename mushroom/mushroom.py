@@ -1,4 +1,5 @@
 import logging
+import pickle
 import os
 import re 
 from copy import deepcopy
@@ -129,8 +130,8 @@ class Mushroom(object):
     def from_config(input, accelerator=None):
         if isinstance(input, str):
             mushroom_config = os.path.join(input, 'config.yaml')
-            if os.path.exists(os.path.join(input, 'outputs.npy')):
-                outputs = np.load(os.path.join(input, 'outputs.npy'), allow_pickle=True).flat[0]
+            if os.path.exists(os.path.join(input, 'outputs.pkl')):
+                outputs = pickle.load(open(os.path.join(input, 'outputs.pkl'), 'rb'))
             else:
                 outputs = None
 
@@ -263,10 +264,7 @@ class Mushroom(object):
             config,
             open(os.path.join(output_dir, f'config.yaml'), 'w')
         )
-        np.save(
-            os.path.join(output_dir, f'outputs.npy'),
-            outputs
-        )
+        pickle.dump(outputs, open(os.path.join(output_dir, f'outputs.pkl'), 'wb'), protocol=4)
 
     def calculate_cluster_intensities(self, use_predicted=True, level=-1, projection_dtype=None, dtype_to_volume=None):
         if projection_dtype is not None:
@@ -556,7 +554,7 @@ class Spore(object):
 
         if self.chkpt_filepath is not None:
             logging.info(f'loading checkpoint: {self.chkpt_filepath}')
-            state_dict = torch.load(self.chkpt_filepath)['state_dict']
+            state_dict = torch.load(self.chkpt_filepath, map_location=torch.device(self.trainer_kwargs['accelerator']))['state_dict']
             self.model.load_state_dict(state_dict)
             
         self.predicted_pixels, self.scaled_predicted_pixels = None, None
