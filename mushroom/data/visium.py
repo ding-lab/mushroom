@@ -20,7 +20,8 @@ def pixels_per_micron(adata):
     if isinstance(adata, str):
         adata = adata_from_visium(adata)
     scalefactors = next(iter(adata.uns['spatial'].values()))['scalefactors']
-    return scalefactors['spot_diameter_fullres'] / 65. # each spot is 65 microns wide
+    # return scalefactors['spot_diameter_fullres'] / 55. # each spot is 55 microns wide
+    return 55.  / scalefactors['spot_diameter_fullres'] # each spot is 55 microns wide
 
 def get_fullres_size(adata):
     d = next(iter(adata.uns['spatial'].values()))
