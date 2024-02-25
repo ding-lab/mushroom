@@ -132,6 +132,8 @@ class Mushroom(object):
             mushroom_config = os.path.join(input, 'config.yaml')
             if os.path.exists(os.path.join(input, 'outputs.pkl')):
                 outputs = pickle.load(open(os.path.join(input, 'outputs.pkl'), 'rb'))
+            elif os.path.exists(os.path.join(input, 'outputs.npy')):
+                outputs = np.load(os.path.join(input, 'outputs.npy'), allow_pickle=True).flat[0]
             else:
                 outputs = None
 
@@ -244,10 +246,14 @@ class Mushroom(object):
                     for level in range(self.num_levels)
                 ] for dtype, volume in self.dtype_to_volume.items()
             }
-            dtype_to_cluster_intensities['integrated'] = [
-                    self.calculate_cluster_intensities(level=level, projection_dtype='integrated') if self.integrated_clusters[level] is not None else None
-                    for level in range(len(self.integrated_clusters))
-            ]
+
+            try:
+                dtype_to_cluster_intensities['integrated'] = [
+                        self.calculate_cluster_intensities(level=level, projection_dtype='integrated') if self.integrated_clusters[level] is not None else None
+                        for level in range(len(self.integrated_clusters))
+                ]
+            except KeyError:
+                logging.info('no integrated clusters found')
 
         outputs = {
             'section_positions': self.section_positions,
