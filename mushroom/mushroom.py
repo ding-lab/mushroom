@@ -200,7 +200,7 @@ class Mushroom(object):
             spore.embed_sections()
 
         # make sure all spores are the same neighborhood resolution
-        sizes = [spore.clusters[0].shape[-2:]]
+        sizes = [spore.clusters[0].shape[-2:] for spore in self.dtype_to_spore.values()]
         idx = np.argmax([x[0] for x in sizes])
         size = sizes[idx]
         for dtype in dtypes:
@@ -229,8 +229,8 @@ class Mushroom(object):
         dtype_to_cluster_probs, dtype_to_cluster_probs_all = {}, {}
         for dtype, spore in self.dtype_to_spore.items():
             dtype_to_clusters[dtype] = spore.clusters
-            dtype_to_cluster_probs = spore.cluster_probs
-            dtype_to_cluster_probs_all = spore.cluster_probs_all
+            dtype_to_cluster_probs[dtype] = spore.cluster_probs
+            dtype_to_cluster_probs_all[dtype] = spore.cluster_probs_all
 
         # cluster intensities
         dtype_to_cluster_intensities = {
@@ -413,13 +413,16 @@ class Mushroom(object):
         if return_axs:
             return axs
         
-    def assign_pts(self, pts, section_id, dtype, level=-1, scale=True, use_volume=False):
+    def assign_pts(self, pts, section_id, dtype, level=-1, scale=True, use_volume=False, volume=None):
         """
         pts are (x, y)
         """
         dtype = section_id[1] if dtype is None else dtype
 
         if scale:
+            # target_ppm = self.dtype_to_spore[section_id[1]].target_ppm
+            # print(target_ppm)
+            # target_ppm /= 2
             scaler = self.input_ppm / self.target_ppm
             pts = pts / scaler
             pts = pts.astype(int)
@@ -429,9 +432,13 @@ class Mushroom(object):
             nbhds = self.integrated_clusters[level][section_idx]
         else:
             if use_volume:
-                section_idx = self.section_ids.index(section_id)   
+                section_idx = self.section_ids.index(section_id)
                 position = self.section_positions[section_idx]
-                nbhds = self.dtype_to_volume[dtype][position]
+
+                if volume is None:
+                    nbhds = self.dtype_to_volume[dtype][position]
+                else:
+                    nbhds = volume[position]
 
             else:
                 spore = self.dtype_to_spore[dtype]
@@ -560,7 +567,8 @@ class Spore(object):
 
         if self.chkpt_filepath is not None:
             logging.info(f'loading checkpoint: {self.chkpt_filepath}')
-            state_dict = torch.load(self.chkpt_filepath, map_location=torch.device(self.trainer_kwargs['accelerator']))['state_dict']
+            map_str = 'cuda' if self.trainer_kwargs['accelerator'] == 'gpu' else 'cpu'
+            state_dict = torch.load(self.chkpt_filepath, map_location=torch.device(map_str))['state_dict']
             self.model.load_state_dict(state_dict)
             
         self.predicted_pixels, self.scaled_predicted_pixels = None, None
