@@ -35,12 +35,20 @@ def get_config_info(config, name):
     return sid_to_filepaths, section_ids, fps
 
 def generate_norm_transform(section_to_img):
+    # for sid, img in section_to_img.items():
+    #     print(sid)
+    #     for i, x in enumerate(img):
+    #         # print(x.shape, x.unique())
+    #         plt.imshow(x)
+    #         plt.title(i)
+    #         plt.show()
     means = torch.cat(
         [x.mean(dim=(-2, -1)).unsqueeze(0) for x in section_to_img.values()]
     ).mean(0)
     stds = torch.cat(
         [x.std(dim=(-2, -1)).unsqueeze(0) for x in section_to_img.values()]
     ).mean(0)
+    stds += 1e-16 # make sure we arent dividing by zero if all values in channel are zero
     normalize = Normalize(means, stds)
     return normalize
 
@@ -55,8 +63,11 @@ def get_multiplex_section_to_img(dtype_identifier, config, ppm, target_ppm, chan
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info('processing sections')
+    scaler = 1 / (target_ppm / ppm)
+    print(scaler)
     section_to_img = multiplex.get_section_to_image(
-        sid_to_filepaths, channels, channel_mapping=channel_mapping, scale=target_ppm / ppm, contrast_pct=contrast_pct)
+        sid_to_filepaths, channels, channel_mapping=channel_mapping, scale=scaler, contrast_pct=contrast_pct)
+    print(dtype_identifier, next(iter(section_to_img.values())).shape)
     
     normalize = generate_norm_transform(section_to_img)
     
@@ -71,8 +82,11 @@ def get_he_section_to_img(dtype_identifier, config, ppm, target_ppm, **kwargs):
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info('processing sections')
+    scaler = 1 / (target_ppm / ppm)
+    print(scaler)
     section_to_img = he.get_section_to_image(
-        sid_to_filepaths, scale=target_ppm / ppm)
+        sid_to_filepaths, scale=scaler)
+    print(dtype_identifier, next(iter(section_to_img.values())).shape)
     
     normalize = generate_norm_transform(section_to_img)
     
@@ -92,7 +106,9 @@ def get_xenium_section_to_img(
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info(f'processing sections')
-    tiling_size = int(ppm / target_ppm)
+    # tiling_size = int(ppm / target_ppm)
+    # tiling_size = int(ppm * target_ppm)
+    tiling_size = int(target_ppm / ppm)
     section_to_adata = {
         sid:xenium.adata_from_xenium(fp, normalize=True, base=log_base)
         for sid, fp in sid_to_filepaths.items()
@@ -105,6 +121,7 @@ def get_xenium_section_to_img(
         img = xenium.to_multiplex(adata, tiling_size=tiling_size, method=tiling_method, radius_sf=tiling_radius)
         img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
         section_to_img[sid] = img
+    print(dtype_identifier, next(iter(section_to_img.values())).shape)
    
     normalize = generate_norm_transform(section_to_img)
 
@@ -124,7 +141,8 @@ def get_cosmx_section_to_img(
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info(f'processing sections')
-    tiling_size = int(ppm / target_ppm)
+    # tiling_size = int(ppm / target_ppm)
+    tiling_size = int(target_ppm / ppm)
     section_to_adata = {
         sid:cosmx.adata_from_cosmx(fp, normalize=True, base=log_base)
         for sid, fp in sid_to_filepaths.items()
@@ -137,6 +155,7 @@ def get_cosmx_section_to_img(
         img = cosmx.to_multiplex(adata, tiling_size=tiling_size, method=tiling_method, radius_sf=tiling_radius)
         img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
         section_to_img[sid] = img
+    print(dtype_identifier, next(iter(section_to_img.values())).shape)
    
     normalize = generate_norm_transform(section_to_img)
 
@@ -157,7 +176,9 @@ def get_visium_section_to_img(
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info(f'processing sections')
-    tiling_size = int(ppm / target_ppm)
+    print('ppm', ppm, 'target_ppm', target_ppm)
+    tiling_size = int(target_ppm / ppm)
+    print('tiling size', tiling_size)
     section_to_adata = {
         sid:visium.adata_from_visium(fp, normalize=True, base=log_base)
         for sid, fp in sid_to_filepaths.items()
@@ -170,6 +191,7 @@ def get_visium_section_to_img(
         img = visium.to_multiplex(adata, tiling_size=tiling_size, method=tiling_method, radius_sf=tiling_radius)
         img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
         section_to_img[sid] = img
+    print(dtype_identifier, next(iter(section_to_img.values())).shape)
    
     normalize = generate_norm_transform(section_to_img)
 
@@ -190,7 +212,7 @@ def get_points_section_to_img(
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info(f'processing sections')
-    tiling_size = int(ppm / target_ppm)
+    tiling_size = int(target_ppm / ppm)
     section_to_adata = {
         sid:user_points.adata_from_point_based(fp, normalize=True, base=log_base)
         for sid, fp in sid_to_filepaths.items()
@@ -239,6 +261,11 @@ def get_learner_data(config, ppm, target_ppm, tile_size, data_mask=None, **kwarg
             section_to_img, section_to_adata, norm, channels = get_points_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
         else:
             raise RuntimeError(f'dtype {dtype} is not a valid data type')
+        
+        img = next(iter(section_to_img.values()))
+        if img.shape[-2] <= tile_size or img.shape[-1] <= tile_size:
+            hw = (img.shape[-2], img.shape[-1])
+            raise RuntimeError(f'target resolution must result in an image shape with dimensions larger than num patches. num patches was {tile_size} and a target resolution of {target_ppm} results in an image shape of {hw}')
 
         dtype_to_section_to_img[dtype] = section_to_img
         dtype_to_norm[dtype] = norm
