@@ -231,7 +231,7 @@ class Mushroom(object):
             dtype_to_clusters[dtype] = spore.clusters
             dtype_to_cluster_probs[dtype] = spore.cluster_probs
             dtype_to_cluster_probs_all[dtype] = spore.cluster_probs_all
-            dtype_to_cluster_to_agg[dtype] = spore.cluser_to_agg
+            dtype_to_cluster_to_agg[dtype] = spore.cluster_to_agg
 
         # cluster intensities
         dtype_to_cluster_intensities = {
