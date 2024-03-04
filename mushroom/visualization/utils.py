@@ -54,11 +54,11 @@ def get_hierarchical_cmap(label_to_hierarchy):
     label_to_color = {}
     for label, agg in label_to_hierarchy.items():
         if len(agg) == 1:
-            label_to_color[label] = LinearSegmentedColormap.from_list('a', ['white', color_endpoints[label]], N=10)(.8)
+            label_to_color[label] = LinearSegmentedColormap.from_list('a', ['white', color_endpoints[label]], N=100)(.8)
         elif len(agg) == 2:
             n_colors = n_clusts[1]
             val = (agg[-1] + 1) / n_colors
-            label_to_color[label] = LinearSegmentedColormap.from_list('a', ['white', color_endpoints[agg[0]]], N=n_colors)(val)
+            label_to_color[label] = LinearSegmentedColormap.from_list('a', ['white', color_endpoints[agg[0]]], N=100)(val)
         else:
             n_colors = np.product(n_clusts[1:])
             arr = np.arange(n_colors)
@@ -67,7 +67,7 @@ def get_hierarchical_cmap(label_to_hierarchy):
                 arr = arr[x * max_c:(x + 1) * max_c]
             idx = arr[agg[-1]]
             val = (idx + 1) / n_colors
-            label_to_color[label] = LinearSegmentedColormap.from_list('a', ['white', color_endpoints[agg[0]]], N=n_colors)(val)
+            label_to_color[label] = LinearSegmentedColormap.from_list('a', ['white', color_endpoints[agg[0]]], N=100)(val)
     label_to_color = {k:v[:3] for k, v in label_to_color.items()}
     return label_to_color
 
