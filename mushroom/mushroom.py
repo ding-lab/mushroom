@@ -438,7 +438,7 @@ class Mushroom(object):
             # scaler = self.input_ppm / self.target_ppm
             scaler = 1 / (self.target_ppm / self.input_ppm)
 
-            pts = pts / scaler
+            pts = pts * scaler
             pts = pts.astype(int)
 
         if dtype == 'integrated':
