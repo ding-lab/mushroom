@@ -147,11 +147,24 @@ def relabel(labels):
         
     return new
 
-def label_agg_clusters(clusters):
-    smooshed = np.vectorize(smoosh)(*clusters)
-    relabeled = relabel(torch.tensor(smooshed)).numpy()
-    mapping = {relabeled[s, r, c]:tuple([x[s, r, c].item() for x in clusters]) for s in range(relabeled.shape[0]) for r in range(relabeled.shape[1]) for c in range(relabeled.shape[2])}
-    return relabeled, mapping
+# def label_agg_clusters(clusters):
+#     smooshed = np.vectorize(smoosh)(*clusters)
+#     relabeled = relabel(torch.tensor(smooshed)).numpy()
+#     mapping = {relabeled[s, r, c]:tuple([x[s, r, c].item() for x in clusters]) for s in range(relabeled.shape[0]) for r in range(relabeled.shape[1]) for c in range(relabeled.shape[2])}
+#     return relabeled, mapping
+def label_agg_clusters(agg_clusters):
+    aggs = np.stack(agg_clusters)
+    aggs = rearrange(aggs, 'z n h w -> (n h w) z')
+    aggs = np.unique(aggs, axis=0)
+    agg_to_label = {tuple(agg):i for i, agg in enumerate(aggs)}
+    label_to_agg = {v:k for k, v in agg_to_label.items()}
+
+    def assign_labels(*args):
+        return agg_to_label[tuple(args)]
+
+    relabeled = np.vectorize(assign_labels)(*agg_clusters)
+    
+    return relabeled, label_to_agg
 
 
 def aggregate_clusters(df, cluster_ids, n_clusters=10, distance_threshold=None):
@@ -205,6 +218,7 @@ def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8,
 
     x = TF.resize(x, size, antialias=antialias, interpolation=interpolation)
     
+    # really need to rewrite this in a sane way
     if x.dtype not in [torch.long, torch.int64, torch.int32, torch.bool, torch.float32, torch.float64] and x.dtype != target_dtype: # if its a labeled image this wont work
         x = TF.convert_image_dtype(x, target_dtype)
 

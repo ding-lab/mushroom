@@ -9,8 +9,25 @@ import torch
 import torchvision.transforms.functional as TF
 import tifffile
 from einops import rearrange, repeat
+from matplotlib.colors import CSS4_COLORS, LinearSegmentedColormap
 from PIL import Image
 from skimage.exposure import adjust_gamma
+
+SEQUENTIAL_CMAPS = ['Greys', 'Purples', 'Blues', 'Greens', 'Oranges', 'Reds',
+                      'YlOrBr', 'YlOrRd', 'OrRd', 'PuRd', 'RdPu', 'BuPu',
+                      'GnBu', 'PuBu', 'YlGnBu', 'PuBuGn', 'BuGn', 'YlGn']
+
+COLORS = [
+    np.asarray([52, 40, 184]) / 255., # blue
+    np.asarray([204, 137, 4]) / 255., # orange
+    np.asarray([25, 117, 5]) / 255., # green
+    np.asarray([161, 19, 14]) / 255., # red
+    np.asarray([109, 12, 148]) / 255., # purple
+    np.asarray([92, 60, 1]) / 255., # brown
+    np.asarray([224, 54, 185]) / 255., # pink
+    np.asarray([2, 194, 191]) / 255., # cyan
+]
+COLORS += CSS4_COLORS
 
 
 def get_cmap(n):
@@ -26,12 +43,41 @@ def get_cmap(n):
     
     return cmap
 
+def get_hierarchical_cmap(label_to_hierarchy):
+    aggs = np.stack(list(label_to_hierarchy.values()))
+    n_clusts = aggs.max(0) + 1
 
-def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=False):
+    n_maps = n_clusts[0]
+
+    color_endpoints = COLORS[:n_maps]
+    
+    label_to_color = {}
+    for label, agg in label_to_hierarchy.items():
+        if len(agg) == 1:
+            label_to_color[label] = LinearSegmentedColormap.from_list('a', ['white', color_endpoints[label]], N=100)(.8)
+        elif len(agg) == 2:
+            n_colors = n_clusts[1]
+            val = (agg[-1] + 1) / n_colors
+            label_to_color[label] = LinearSegmentedColormap.from_list('a', ['white', color_endpoints[agg[0]]], N=100)(val)
+        else:
+            n_colors = np.product(n_clusts[1:])
+            arr = np.arange(n_colors)
+            for i in range(1, len(agg) - 1):
+                x, max_c = agg[i], n_clusts[i + 1]
+                arr = arr[x * max_c:(x + 1) * max_c]
+            idx = arr[agg[-1]]
+            val = (idx + 1) / n_colors
+            label_to_color[label] = LinearSegmentedColormap.from_list('a', ['white', color_endpoints[agg[0]]], N=100)(val)
+    label_to_color = {k:v[:3] for k, v in label_to_color.items()}
+    return label_to_color
+
+def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=True, label_to_hierarchy=None):
     if isinstance(labeled, torch.Tensor):
         labeled = labeled.numpy()
     
-    if preserve_indices:
+    if label_to_hierarchy is not None:
+        cmap = get_hierarchical_cmap(label_to_hierarchy)
+    elif preserve_indices:
         cmap = get_cmap(labeled.max() + 1) if cmap is None else cmap
     else:
         cmap = get_cmap(len(np.unique(labeled))) if cmap is None else cmap
@@ -49,7 +95,7 @@ def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=False):
     return new
 
 
-def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserve_indices=False, return_axs=False):
+def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserve_indices=False, return_axs=False, label_to_hierarchy=None):
     if figsize is None:
         figsize = (clusters.shape[0] * 2, 5)
         if not horizontal:
@@ -61,30 +107,43 @@ def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserv
         fig, axs = plt.subplots(nrows=clusters.shape[0] + 1, figsize=figsize)
 
     if cmap is None:
-        cmap = get_cmap(len(np.unique(clusters)))
+        if label_to_hierarchy is not None:
+            cmap = get_hierarchical_cmap(label_to_hierarchy)
+        else:
+            cmap = get_cmap(len(np.unique(clusters)))
     elif isinstance(cmap, str):
         cmap = sns.color_palette(cmap)
 
     for i, labeled in enumerate(clusters):
-        axs[i].imshow(display_labeled_as_rgb(labeled, cmap=cmap, preserve_indices=preserve_indices))
+        axs[i].imshow(display_labeled_as_rgb(labeled, cmap=cmap, preserve_indices=preserve_indices, label_to_hierarchy=label_to_hierarchy))
         axs[i].set_xticks([])
         axs[i].set_yticks([])
 
-    display_legend(np.unique(clusters), cmap, ax=axs[-1])
+    display_legend(np.unique(clusters), cmap, ax=axs[-1], label_to_hierarchy=label_to_hierarchy)
     axs[-1].axis('off')
 
     if return_axs:
         return axs
 
 
-def display_legend(labels, cmap, ax=None):
+def display_legend(labels, cmap, ax=None, label_to_hierarchy=None):
     if ax is None:
         fig, ax = plt.subplots()
-    ax.legend(
-        handles=[mpatches.Patch(color=color, label=label)
-                 for label, color in zip(labels, cmap)],
-        loc='center'
-    )
+
+    if label_to_hierarchy is not None:
+        xs = [agg + (l,) for l, agg in label_to_hierarchy.items()]
+        order = [x[-1] for x in sorted(xs)]
+        ax.legend(
+            handles=[mpatches.Patch(color=cmap[label], label=label)
+                    for label in order],
+            loc='center'
+        )
+    else:
+        ax.legend(
+            handles=[mpatches.Patch(color=color, label=label)
+                    for label, color in zip(labels, cmap)],
+            loc='center'
+        )
     # return ax
 
 

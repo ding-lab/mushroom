@@ -14,8 +14,10 @@ from tifffile import TiffFile
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, Normalize, RandomCrop, Compose
 
+import mushroom.utils as utils
 from mushroom.data.inference import InferenceTransform, InferenceSectionDataset
 from mushroom.data.utils import LearnerData
+
 
 
 def pixels_per_micron(filepath):
@@ -152,17 +154,22 @@ def get_channel_counts(filepaths, channel_mapping=None):
     return counts.most_common()
 
 
-def get_section_to_image(sid_to_filepaths, channels, channel_mapping=None, scale=.1, contrast_pct=95.):
+def get_section_to_image(sid_to_filepaths, channels, channel_mapping=None, scale=.1, contrast_pct=None):
     if channel_mapping is None:
         channel_mapping = {}
 
     section_to_img = {}
     for sid, filepath in sid_to_filepaths.items():
         logging.info(f'generating image data for section {sid}')
-        cs, imgs = extract_ome_tiff(filepath, as_dict=False, scale=scale)
+        # cs, imgs = extract_ome_tiff(filepath, as_dict=False, scale=scale)
+        cs, imgs = extract_ome_tiff(filepath, as_dict=False)
+        imgs = np.stack([utils.rescale(x.astype(np.float32), scale=scale, dim_order='h w', target_dtype=np.float32) for x in imgs])
+        # print(imgs[0].shape, np.unique(imgs[0]))
         cs = [channel_mapping.get(c, c) for c in cs]
         idxs = [cs.index(c) for c in channels]
-        imgs = imgs[idxs].astype(np.float32)
+        imgs = imgs[idxs]
+        # imgs = imgs[idxs].astype(np.float32)
+        # print(np.unique(imgs[0]))
 
         if contrast_pct is not None:
             for i, bw in enumerate(imgs):

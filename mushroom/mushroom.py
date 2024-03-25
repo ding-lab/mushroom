@@ -226,11 +226,12 @@ class Mushroom(object):
         dtype_to_clusters = {
             'integrated': self.integrated_clusters,
         }
-        dtype_to_cluster_probs, dtype_to_cluster_probs_all = {}, {}
+        dtype_to_cluster_probs, dtype_to_cluster_probs_all, dtype_to_cluster_to_agg = {}, {}, {}
         for dtype, spore in self.dtype_to_spore.items():
             dtype_to_clusters[dtype] = spore.clusters
             dtype_to_cluster_probs[dtype] = spore.cluster_probs
             dtype_to_cluster_probs_all[dtype] = spore.cluster_probs_all
+            dtype_to_cluster_to_agg[dtype] = spore.cluster_to_agg
 
         # cluster intensities
         dtype_to_cluster_intensities = {
@@ -264,6 +265,7 @@ class Mushroom(object):
             'dtype_to_cluster_probs': dtype_to_cluster_probs,
             'dtype_to_cluster_probs_all': dtype_to_cluster_probs_all,
             'dtype_to_cluster_intensities': dtype_to_cluster_intensities,
+            'dtype_to_cluster_to_agg': dtype_to_cluster_to_agg
         }
 
         yaml.safe_dump(
@@ -369,19 +371,21 @@ class Mushroom(object):
     def display_clusters(self, dtype, level=-1, section_idxs=None, section_ids=None, cmap=None, figsize=None, horizontal=True, preserve_indices=True, return_axs=False):
         if dtype == 'integrated':
             clusters = self.integrated_clusters[level]
+            label_to_hierarchy = None
         else:
             clusters = self.dtype_to_spore[dtype].clusters[level]
+            label_to_hierarchy = self.dtype_to_spore[dtype].cluster_to_agg[level]
 
         if section_ids is None and section_idxs is None:
             return vis_utils.display_clusters(
-                clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
+                clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=label_to_hierarchy)
         else:
             if section_idxs is None:
                 section_idxs = [i for i, sid in enumerate(self.section_ids) if sid in section_ids]
             return vis_utils.display_clusters(
-                clusters[section_idxs], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
+                clusters[section_idxs], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=label_to_hierarchy)
         
-    def display_volumes(self, positions=None, dtype_to_volume=None, figsize=None, return_axs=False):
+    def display_volumes(self, positions=None, dtype_to_volume=None, figsize=None, return_axs=False, level=None):
         if dtype_to_volume is None:
             assert self.dtype_to_volume is not None, f'need to run generate_interpolated_volumes first'
             dtype_to_volume = self.dtype_to_volume
@@ -403,12 +407,20 @@ class Mushroom(object):
         for i in range(volumes[0].shape[0]):
             for j, volume in enumerate(volumes):
                 ax = axs[i, j]
-                rgb = vis_utils.display_labeled_as_rgb(volume[i], preserve_indices=True)
+
+                dt = dtypes[j]
+
+                if dt != 'integrated' and level is not None:
+                    label_to_hierarchy = self.dtype_to_spore[dt].cluster_to_agg[level]
+                else:
+                    label_to_hierarchy = None
+
+                rgb = vis_utils.display_labeled_as_rgb(volume[i], preserve_indices=True, label_to_hierarchy=label_to_hierarchy)
                 ax.imshow(rgb)
                 ax.axis('off')
 
                 if i==0:
-                    ax.set_title(dtypes[j])
+                    ax.set_title(dt)
 
         if return_axs:
             return axs
@@ -423,8 +435,10 @@ class Mushroom(object):
             # target_ppm = self.dtype_to_spore[section_id[1]].target_ppm
             # print(target_ppm)
             # target_ppm /= 2
-            scaler = self.input_ppm / self.target_ppm
-            pts = pts / scaler
+            # scaler = self.input_ppm / self.target_ppm
+            scaler = 1 / (self.target_ppm / self.input_ppm)
+
+            pts = pts * scaler
             pts = pts.astype(int)
 
         if dtype == 'integrated':
@@ -814,12 +828,12 @@ class Spore(object):
     def display_clusters(self, level=-1, section_idxs=None, section_ids=None, cmap=None, figsize=None, horizontal=True, preserve_indices=True, return_axs=False):
         if section_ids is None and section_idxs is None:
             return vis_utils.display_clusters(
-                self.clusters[level], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
+                self.clusters[level], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=self.cluster_to_agg[level])
         else:
             if section_idxs is None:
                 section_idxs = [i for i, sid in enumerate(self.section_ids) if sid in section_ids]
             return vis_utils.display_clusters(
-                self.clusters[level][section_idxs], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs)
+                self.clusters[level][section_idxs], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=self.cluster_to_agg[level])
         
     def assign_pts(self, pts, section_id=None, section_idx=None, level=-1, scale=True):
         """
@@ -827,7 +841,8 @@ class Spore(object):
         """
         assert section_id is not None or section_idx is not None, f'either section id or section index must be given'
         if scale:
-            scaler = self.input_ppm / self.target_ppm
+            # scaler = self.input_ppm / self.target_ppm
+            scaler = 1 / (self.target_ppm / self.input_ppm)
             pts = pts / scaler
             pts = pts.astype(int)
 
