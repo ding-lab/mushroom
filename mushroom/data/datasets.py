@@ -93,7 +93,7 @@ def get_he_section_to_img(dtype_identifier, config, ppm, target_ppm, **kwargs):
     return section_to_img, normalize, channels
 
 def get_xenium_section_to_img(
-        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, tiling_method='grid', tiling_radius=1., log_base=np.e, **kwargs
+        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, tiling_method='grid', tiling_radius=1., log_base=np.e, normalize=True, **kwargs
     ):
     logging.info(f'starting {dtype_identifier} processing')
     sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
@@ -106,11 +106,9 @@ def get_xenium_section_to_img(
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info(f'processing sections')
-    # tiling_size = int(ppm / target_ppm)
-    # tiling_size = int(ppm * target_ppm)
     tiling_size = int(target_ppm / ppm)
     section_to_adata = {
-        sid:xenium.adata_from_xenium(fp, normalize=True, base=log_base)
+        sid:xenium.adata_from_xenium(fp, normalize=normalize, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
     section_to_adata = {sid:adata[:, channels] for sid, adata in section_to_adata.items()}
@@ -128,7 +126,7 @@ def get_xenium_section_to_img(
     return section_to_img, section_to_adata, normalize, channels
 
 def get_cosmx_section_to_img(
-        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, tiling_method='grid', tiling_radius=1., log_base=np.e, **kwargs
+        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, tiling_method='grid', tiling_radius=1., log_base=np.e, normalize_counts=True, **kwargs
     ):
     logging.info(f'starting {dtype_identifier} processing')
     sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
@@ -144,7 +142,7 @@ def get_cosmx_section_to_img(
     # tiling_size = int(ppm / target_ppm)
     tiling_size = int(target_ppm / ppm)
     section_to_adata = {
-        sid:cosmx.adata_from_cosmx(fp, normalize=True, base=log_base)
+        sid:cosmx.adata_from_cosmx(fp, normalize=normalize_counts, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
     section_to_adata = {sid:adata[:, channels] for sid, adata in section_to_adata.items()}
@@ -162,7 +160,7 @@ def get_cosmx_section_to_img(
     return section_to_img, section_to_adata, normalize, channels
 
 def get_visium_section_to_img(
-        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02, tiling_method='radius', tiling_radius=1., log_base=np.e, **kwargs
+        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02, tiling_method='radius', tiling_radius=1., log_base=np.e, normalize_counts=True, **kwargs
     ):
     logging.info(f'starting {dtype_identifier} processing')
     sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
@@ -180,7 +178,7 @@ def get_visium_section_to_img(
     tiling_size = int(target_ppm / ppm)
     print('tiling size', tiling_size)
     section_to_adata = {
-        sid:visium.adata_from_visium(fp, normalize=True, base=log_base)
+        sid:visium.adata_from_visium(fp, normalize=normalize_counts, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
     section_to_adata = {sid:adata[:, channels] for sid, adata in section_to_adata.items()}
@@ -198,7 +196,7 @@ def get_visium_section_to_img(
     return section_to_img, section_to_adata, normalize, channels
 
 def get_points_section_to_img(
-        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02, tiling_method='grid', tiling_radius=1., log_base=np.e, **kwargs
+        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02, tiling_method='grid', tiling_radius=1., log_base=np.e, normalize_counts=True, **kwargs
     ):
     logging.info(f'starting {dtype_identifier} processing')
     sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
@@ -214,7 +212,7 @@ def get_points_section_to_img(
     logging.info(f'processing sections')
     tiling_size = int(target_ppm / ppm)
     section_to_adata = {
-        sid:user_points.adata_from_point_based(fp, normalize=True, base=log_base)
+        sid:user_points.adata_from_point_based(fp, normalize=normalize_counts, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
 
@@ -252,13 +250,13 @@ def get_learner_data(config, ppm, target_ppm, tile_size, data_mask=None, **kwarg
             section_to_img, norm, channels = get_he_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
             section_to_adata = None
         elif parsed_dtype == 'xenium':
-            section_to_img, section_to_adata, norm, channels = get_xenium_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
+            section_to_img, section_to_adata, norm, channels = get_xenium_section_to_img(dtype, config, ppm, target_ppm, normalize_counts=True, **kwargs)
         elif parsed_dtype == 'cosmx':
-            section_to_img, section_to_adata, norm, channels = get_cosmx_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
+            section_to_img, section_to_adata, norm, channels = get_cosmx_section_to_img(dtype, config, ppm, target_ppm, normalize_counts=True, **kwargs)
         elif parsed_dtype == 'visium':
-            section_to_img, section_to_adata, norm, channels = get_visium_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
+            section_to_img, section_to_adata, norm, channels = get_visium_section_to_img(dtype, config, ppm, target_ppm, normalize_counts=True, **kwargs)
         elif parsed_dtype == 'points':
-            section_to_img, section_to_adata, norm, channels = get_points_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
+            section_to_img, section_to_adata, norm, channels = get_points_section_to_img(dtype, config, ppm, target_ppm, normalize_counts=True, **kwargs)
         else:
             raise RuntimeError(f'dtype {dtype} is not a valid data type')
         
