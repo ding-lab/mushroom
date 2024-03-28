@@ -10,6 +10,8 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from einops import repeat, rearrange
 
+import mushroom.utils as utils
+
 
 @dataclass
 class SAEargs:
@@ -88,7 +90,7 @@ class SAE(nn.Module):
         dtype_to_n_channels, # mapping, keys are dtypes, values are n_channels
         codebook_dim = 64,
         num_clusters = (8, 4, 2,),
-        dtype_to_decoder_dims = {'multiplex': (256, 128, 64,), 'he': (256, 128, 10,), 'visium': (256, 512, 2048,), 'xenium': (256, 256, 256,), 'cosmx': (256, 512, 1024,)},
+        dtype_to_decoder_dims = {'multiplex': (256, 128, 64,), 'he': (256, 128, 10,), 'visium': (256, 512, 2048,), 'xenium': (256, 256, 256,), 'cosmx': (256, 512, 1024,), 'points': (256, 512, 1024,)},
         recon_scaler = 1.,
         neigh_scaler = .1,
         total_steps = 1,
@@ -128,10 +130,16 @@ class SAE(nn.Module):
         })
         # self.patch_to_emb = nn.Sequential(*encoder.to_patch_embedding[1:])
 
+        # self.dtype_to_decoder = nn.ModuleDict({
+        #     dtype:get_decoder(codebook_dim + self.encoder_dim, dims, dtype_to_n_channels[dtype])
+        #     for dtype, dims in self.dtype_to_decoder_dims.items()
+        #     if dtype in dtype_to_n_channels
+        # })
         self.dtype_to_decoder = nn.ModuleDict({
-            dtype:get_decoder(codebook_dim + self.encoder_dim, dims, dtype_to_n_channels[dtype])
-            for dtype, dims in self.dtype_to_decoder_dims.items()
-            if dtype in dtype_to_n_channels
+            dtype:get_decoder(codebook_dim + self.encoder_dim, self.dtype_to_decoder_dims.get(dtype, dtype_to_decoder_dims[utils.parse_dtype(dtype)]), n_channels)
+            for dtype, n_channels in dtype_to_n_channels.items()
+            # for dtype, dims in self.dtype_to_decoder_dims.items()
+            # if dtype in dtype_to_n_channels
         })
 
         self.level_to_logits = nn.ModuleList([nn.Linear(self.encoder_dim, n) for n in self.num_clusters])
@@ -167,37 +175,7 @@ class SAE(nn.Module):
                 encoded = torch.einsum('bncd,bnc->bnd', z, hots[i])
             results.append(encoded)
         return results
-    
-    # def end_pretraining(self):
-    #     modules = [
-    #         self.encoder,
-    #         self.dtype_to_patch,
-    #         self.level_to_logits,
-    #         self.codebooks
-    #     ]
-    #     for module in modules:
-    #         for param in module.parameters():
-    #             param.requires_grad = False
-        
-    #     params = [
-    #         self.slide_embedding,
-    #         self.dtype_embedding
-    #     ]
-    #     for param in params:
-    #         param.requires_grad = False
-
-    #     nested_params = [
-    #         self.codebooks,
-    #     ]
-
-    #     for ps in nested_params:
-    #         for param in ps:
-    #             param.requires_grad = False
-
-    #     self.is_pretraining = False
-    #     # self.neigh_scaler_value = self.neigh_scaler
-    #     self.variable_neigh_scaler = VariableScaler(self.neigh_scaler, total_steps=self.total_steps, min_value=self.neigh_scaler)
-
+ 
        
     def encode(self, imgs, slides, dtypes):
         patches = []

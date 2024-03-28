@@ -9,11 +9,26 @@ import torch
 import torchvision.transforms.functional as TF
 import tifffile
 from einops import rearrange, repeat
+from matplotlib.colors import CSS4_COLORS, LinearSegmentedColormap
 from PIL import Image
+from skimage.exposure import adjust_gamma
 
-import mushroom.data.multiplex as multiplex
-import mushroom.data.visium as visium
-import mushroom.data.he as he
+SEQUENTIAL_CMAPS = ['Greys', 'Purples', 'Blues', 'Greens', 'Oranges', 'Reds',
+                      'YlOrBr', 'YlOrRd', 'OrRd', 'PuRd', 'RdPu', 'BuPu',
+                      'GnBu', 'PuBu', 'YlGnBu', 'PuBuGn', 'BuGn', 'YlGn']
+
+COLORS = [
+    np.asarray([52, 40, 184]) / 255., # blue
+    np.asarray([204, 137, 4]) / 255., # orange
+    np.asarray([25, 117, 5]) / 255., # green
+    np.asarray([161, 19, 14]) / 255., # red
+    np.asarray([109, 12, 148]) / 255., # purple
+    np.asarray([92, 60, 1]) / 255., # brown
+    np.asarray([224, 54, 185]) / 255., # pink
+    np.asarray([2, 194, 191]) / 255., # cyan
+]
+COLORS += CSS4_COLORS
+
 
 def get_cmap(n):
     if n < 10:
@@ -28,101 +43,41 @@ def get_cmap(n):
     
     return cmap
 
-def calculate_target_visualization_shape(config, output_data, pixels_per_micron=None, microns_per_section=5):
-    scaled_size = output_data['true_imgs'].shape
-    sections = config['sections']
-    if pixels_per_micron is None:
-        for s in sections:
-            for entry in s['data']:
-                if entry['dtype'] == 'visium':
-                    try:
-                        pixels_per_micron = visium.pixels_per_micron(entry['filepath'])
-                    except:
-                        pass
-                if entry['dtype'] == 'multiplex':
-                    try:
-                        pixels_per_micron = multiplex.pixels_per_micron(entry['filepath'])
-                    except:
-                        pass
-                
-                if pixels_per_micron is not None: break
-            if pixels_per_micron is not None: break
+def get_hierarchical_cmap(label_to_hierarchy):
+    aggs = np.stack(list(label_to_hierarchy.values()))
+    n_clusts = aggs.max(0) + 1
 
-    step_size = pixels_per_micron * microns_per_section * config['learner_kwargs']['scale']
-    z_max = int(step_size * np.max([entry['position'] for entry in sections]))
+    n_maps = n_clusts[0]
+
+    color_endpoints = COLORS[:n_maps]
     
-    target_shape = (scaled_size[-1], scaled_size[-2], z_max)
+    label_to_color = {}
+    for label, agg in label_to_hierarchy.items():
+        if len(agg) == 1:
+            label_to_color[label] = LinearSegmentedColormap.from_list('a', ['white', color_endpoints[label]], N=100)(.8)
+        elif len(agg) == 2:
+            n_colors = n_clusts[1]
+            val = (agg[-1] + 1) / n_colors
+            label_to_color[label] = LinearSegmentedColormap.from_list('a', ['white', color_endpoints[agg[0]]], N=100)(val)
+        else:
+            n_colors = np.product(n_clusts[1:])
+            arr = np.arange(n_colors)
+            for i in range(1, len(agg) - 1):
+                x, max_c = agg[i], n_clusts[i + 1]
+                arr = arr[x * max_c:(x + 1) * max_c]
+            idx = arr[agg[-1]]
+            val = (idx + 1) / n_colors
+            label_to_color[label] = LinearSegmentedColormap.from_list('a', ['white', color_endpoints[agg[0]]], N=100)(val)
+    label_to_color = {k:v[:3] for k, v in label_to_color.items()}
+    return label_to_color
 
-    return target_shape
-
- 
-def display_sections(config, multiplex_cmap=None, gene='EPCAM', dtype_order=None):
-    def rescale(x, scale=.1):
-        if not isinstance(x, torch.Tensor):
-            x = torch.tensor(x)
-        x = rearrange(x, 'h w c -> c h w')
-        x = TF.resize(x, (int(x.shape[-2] * scale), int(x.shape[-1] * scale)), antialias=True)
-        x = rearrange(x.numpy(), 'c h w -> h w c')    
-        return x
-
-    if dtype_order is None:
-        dtype_order = sorted({d['dtype'] for entry in config for d in entry['data']})
-
-    fig, axs = plt.subplots(ncols=len(config), nrows=len(dtype_order))
-    axs_mask = np.zeros_like(axs, dtype=bool)
-    config = sorted(config, key=lambda x: x['position'])
-    for c, entry in enumerate(config):
-        for d in entry['data']:
-            dtype, filepath = d['dtype'], d['filepath']
-            r = dtype_order.index(dtype)
-            ax = axs[r, c]
-
-            if dtype == 'multiplex':
-                channel_to_img = multiplex.extract_ome_tiff(filepath, channels=list(multiplex_cmap.keys()))
-                channel_to_img = {channel:np.squeeze(rescale(np.expand_dims(img, -1), scale=.1))
-                     for channel, img in channel_to_img.items()}
-
-                pseudo = multiplex.make_pseudo(channel_to_img, cmap=multiplex_cmap, contrast_pct=90.)
-                pseudo /= pseudo.max()
-                ax.imshow(pseudo)
-            elif dtype == 'he':
-                he = tifffile.imread(filepath)
-                he = rescale(he, .1)
-                ax.imshow(he)
-            elif dtype == 'visium':
-                adata = sc.read_h5ad(filepath)
-                d = next(iter(adata.uns['spatial'].values()))
-                scale = d['scalefactors']['tissue_hires_scalef']
-                h, w = int(d['images']['hires'].shape[0] / scale), int(d['images']['hires'].shape[1] / scale)
-                ax = sc.pl.spatial(
-                    adata, color=gene, alpha_img=.0, ax=ax, show=False, title='',
-                    colorbar_loc=None, crop_coord=(0, w, 0, h))[0]
-                axs[r, c] = ax
-                
-            axs_mask[r, c] = True
-        
-    for ax in axs[~axs_mask].flatten():
-        ax.imshow(np.full((1, 1, 3), .8))
-        ax.set_xticks([])
-        ax.set_yticks([])
-        
-    for ax in axs[axs_mask].flatten():
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.set_ylabel('')
-        ax.set_xlabel('')
-        
-    for ax, dtype in zip(axs[:, 0], dtype_order):
-        ax.set_ylabel(dtype)
-    for ax, sid in zip(axs[0, :], [item['id'] for item in config]):
-        ax.set_title(sid)
-
-
-def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=False):
+def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=True, label_to_hierarchy=None):
     if isinstance(labeled, torch.Tensor):
         labeled = labeled.numpy()
     
-    if preserve_indices:
+    if label_to_hierarchy is not None:
+        cmap = get_hierarchical_cmap(label_to_hierarchy)
+    elif preserve_indices:
         cmap = get_cmap(labeled.max() + 1) if cmap is None else cmap
     else:
         cmap = get_cmap(len(np.unique(labeled))) if cmap is None else cmap
@@ -140,7 +95,7 @@ def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=False):
     return new
 
 
-def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserve_indices=False, return_axs=False):
+def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserve_indices=False, return_axs=False, label_to_hierarchy=None):
     if figsize is None:
         figsize = (clusters.shape[0] * 2, 5)
         if not horizontal:
@@ -152,30 +107,43 @@ def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserv
         fig, axs = plt.subplots(nrows=clusters.shape[0] + 1, figsize=figsize)
 
     if cmap is None:
-        cmap = get_cmap(len(np.unique(clusters)))
+        if label_to_hierarchy is not None:
+            cmap = get_hierarchical_cmap(label_to_hierarchy)
+        else:
+            cmap = get_cmap(len(np.unique(clusters)))
     elif isinstance(cmap, str):
         cmap = sns.color_palette(cmap)
 
     for i, labeled in enumerate(clusters):
-        axs[i].imshow(display_labeled_as_rgb(labeled, cmap=cmap, preserve_indices=preserve_indices))
+        axs[i].imshow(display_labeled_as_rgb(labeled, cmap=cmap, preserve_indices=preserve_indices, label_to_hierarchy=label_to_hierarchy))
         axs[i].set_xticks([])
         axs[i].set_yticks([])
 
-    display_legend(np.unique(clusters), cmap, ax=axs[-1])
+    display_legend(np.unique(clusters), cmap, ax=axs[-1], label_to_hierarchy=label_to_hierarchy)
     axs[-1].axis('off')
 
     if return_axs:
         return axs
 
 
-def display_legend(labels, cmap, ax=None):
+def display_legend(labels, cmap, ax=None, label_to_hierarchy=None):
     if ax is None:
         fig, ax = plt.subplots()
-    ax.legend(
-        handles=[mpatches.Patch(color=color, label=label)
-                 for label, color in zip(labels, cmap)],
-        loc='center'
-    )
+
+    if label_to_hierarchy is not None:
+        xs = [agg + (l,) for l, agg in label_to_hierarchy.items()]
+        order = [x[-1] for x in sorted(xs)]
+        ax.legend(
+            handles=[mpatches.Patch(color=cmap[label], label=label)
+                    for label in order],
+            loc='center'
+        )
+    else:
+        ax.legend(
+            handles=[mpatches.Patch(color=color, label=label)
+                    for label, color in zip(labels, cmap)],
+            loc='center'
+        )
     # return ax
 
 
@@ -184,6 +152,8 @@ def show_groups(clusters, groups):
     mapping.update({i:-1 for i in np.unique(clusters) if i not in groups})
     neigh_ids = np.vectorize(mapping.get)(clusters)
     display_clusters(neigh_ids)
+
+
 
 
 def volume_to_gif(volume, is_probs, filepath, axis=0, duration=200):

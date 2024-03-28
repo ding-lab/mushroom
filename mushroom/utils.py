@@ -1,8 +1,10 @@
+import collections.abc
 import os
 import re
 
 import numpy as np
 import matplotlib.pyplot as plt
+import tifffile
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
@@ -30,6 +32,8 @@ DEFAULT_KERNELS = {
     7: DEFAULT_KERNEL_7
 }
 
+DTYPES = ('multiplex', 'xenium', 'visium', 'he', 'cosmx', 'points',)
+
 def listfiles(folder, regex=None):
     """Return all files with the given regex in the given folder structure"""
     for root, folders, files in os.walk(folder):
@@ -38,6 +42,27 @@ def listfiles(folder, regex=None):
                 yield os.path.join(root, filename)
             elif re.findall(regex, os.path.join(root, filename)):
                 yield os.path.join(root, filename)
+
+# https://stackoverflow.com/questions/3232943/update-value-of-a-nested-dictionary-of-varying-depth
+def recursive_update(d, u):
+    for k, v in u.items():
+        if isinstance(v, collections.abc.Mapping):
+            d[k] = recursive_update(d.get(k, {}), v)
+        else:
+            d[k] = v
+    return d
+
+
+def parse_dtype(dtype_identifier):
+    if '_' not in dtype_identifier:
+        parsed = dtype_identifier
+    else:
+        parsed = dtype_identifier.split('_')[-1]
+
+    if parsed not in DTYPES:
+        raise RuntimeError(f'{dtype_identifier} was supplied and its parsed form {parsed} is not a valid dtype string. valid data identifiers are either {DTYPES} or "[string]_[dtype]" where [string] can be any filepath-safe string and [dtype] must in {DTYPES}')
+    
+    return parsed
 
 def smooth_probabilities(probs, kernel=None, kernel_size=5):
     """
@@ -122,11 +147,24 @@ def relabel(labels):
         
     return new
 
-def label_agg_clusters(clusters):
-    smooshed = np.vectorize(smoosh)(*clusters)
-    relabeled = relabel(torch.tensor(smooshed)).numpy()
-    mapping = {relabeled[s, r, c]:tuple([x[s, r, c].item() for x in clusters]) for s in range(relabeled.shape[0]) for r in range(relabeled.shape[1]) for c in range(relabeled.shape[2])}
-    return relabeled, mapping
+# def label_agg_clusters(clusters):
+#     smooshed = np.vectorize(smoosh)(*clusters)
+#     relabeled = relabel(torch.tensor(smooshed)).numpy()
+#     mapping = {relabeled[s, r, c]:tuple([x[s, r, c].item() for x in clusters]) for s in range(relabeled.shape[0]) for r in range(relabeled.shape[1]) for c in range(relabeled.shape[2])}
+#     return relabeled, mapping
+def label_agg_clusters(agg_clusters):
+    aggs = np.stack(agg_clusters)
+    aggs = rearrange(aggs, 'z n h w -> (n h w) z')
+    aggs = np.unique(aggs, axis=0)
+    agg_to_label = {tuple(agg):i for i, agg in enumerate(aggs)}
+    label_to_agg = {v:k for k, v in agg_to_label.items()}
+
+    def assign_labels(*args):
+        return agg_to_label[tuple(args)]
+
+    relabeled = np.vectorize(assign_labels)(*agg_clusters)
+    
+    return relabeled, label_to_agg
 
 
 def aggregate_clusters(df, cluster_ids, n_clusters=10, distance_threshold=None):
@@ -169,8 +207,20 @@ def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8,
     if size is None:
         size = (int(x.shape[-2] * scale), int(x.shape[-1] * scale))
 
+    dtype_map = { # quick and dirty dtype mapping for common np dtypes
+        np.uint8: torch.uint8,
+        np.float32: torch.float32,
+        np.float64: torch.float64,
+        np.int64: torch.int64,
+        bool: torch.bool,
+    }
+    target_dtype = dtype_map.get(target_dtype, target_dtype)
+
     x = TF.resize(x, size, antialias=antialias, interpolation=interpolation)
-    x = TF.convert_image_dtype(x, target_dtype)
+    
+    # really need to rewrite this in a sane way
+    if x.dtype not in [torch.long, torch.int64, torch.int32, torch.bool, torch.float32, torch.float64] and x.dtype != target_dtype: # if its a labeled image this wont work
+        x = TF.convert_image_dtype(x, target_dtype)
 
     if dim_order == 'h w c':
         x = rearrange(x, 'c h w -> h w c')
@@ -181,10 +231,18 @@ def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8,
         x = x.numpy()
     
     return x
-            
 
-# def mask_list(x, mask):
-#     """
-#     apply mask to non-maskable array
-#     """
-#     mask = 
+def read_mask(mask):
+    if isinstance(mask, str):
+        ext = mask.split('/')[-1].split('.')[-1]
+        if ext == 'tif':
+            mask = tifffile.imread(mask)
+        elif ext in ['npy', 'npz']:
+            mask = np.load(mask)
+        else:
+            raise RuntimeError(f'Extension {ext} is not supported for masks')
+
+    if mask is not None:
+        return mask > 0
+    
+

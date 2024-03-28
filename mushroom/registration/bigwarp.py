@@ -1,11 +1,18 @@
+import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 import torch
 import torchvision.transforms.functional as TF
 import tifffile
 from einops import rearrange
 from scipy import ndimage as ndi
+from skimage.exposure import adjust_gamma
 
-from mushroom.data.visium import get_fullres_size
+import mushroom.data.multiplex as multiplex
+import mushroom.data.visium as visium
+import mushroom.data.xenium as xenium
+import mushroom.data.cosmx as cosmx
+import mushroom.data.he as he
 import mushroom.utils as utils
 
 
@@ -88,7 +95,7 @@ def warp_pts(pts, ddf):
     img = warp_image(img, ddf)
 
     objects = ndi.find_objects(img.numpy())
-    label_to_warped_pt = {}
+    label_to_warped_pt = {} 
     for i, obj in enumerate(objects):
         if obj is None:
             continue
@@ -110,7 +117,7 @@ def warp_pts(pts, ddf):
     return warped, mask
 
 # def register_visium(adata, ddf, target_pix_per_micron=1., moving_pix_per_micron=None):
-def register_visium(to_transform, ddf):
+def register_visium(to_transform, ddf, resolution=None):
     adata = to_transform.copy()
     # if moving_pix_per_micron is None:
     #     moving_pix_per_micron = next(iter(
@@ -154,53 +161,15 @@ def register_visium(to_transform, ddf):
     adata = adata[mask.numpy()]
     adata.obsm['spatial'] = transformed[:, [1, 0]].numpy()
 
+    if resolution is not None:
+        adata.uns['ppm'] = resolution
+
     return adata
 
+def register_cosmx(adata, ddf, resolution=None):
+    return register_xenium(adata, ddf, resolution=resolution)
 
-# def register_visium(adata, ddf, target_pix_per_micron=1., moving_pix_per_micron=None, scale):
-#     new = adata.copy()
-#     if moving_pix_per_micron is None:
-#         moving_pix_per_micron = next(iter(
-#             adata.uns['spatial'].values()))['scalefactors']['spot_diameter_fullres'] / 65.
-#     print(target_pix_per_micron, moving_pix_per_micron)
-#     scale = tissue_hires_scalef
-#     # scale = target_pix_per_micron / moving_pix_per_micron # bring to target img resolution
-#     # scale = moving_pix_per_micron / target_pix_per_micron # bring to target img resolution
-
-#     print(target_pix_per_micron, moving_pix_per_micron, scale)
-
-#     d = next(iter(new.uns['spatial'].values()))
-#     scalefactors = d['scalefactors']
-
-#     hires, lowres = torch.tensor(d['images']['hires']), torch.tensor(d['images']['lowres'])
-#     hires = TF.resize(
-#         rearrange(hires, 'h w c -> c h w'), (int(scale * hires.shape[0]), int(scale * hires.shape[1])), antialias=True,
-#     )
-#     lowres = TF.resize(
-#         rearrange(lowres, 'h w c -> c h w'), (int(scale * lowres.shape[0]), int(scale * lowres.shape[1])), antialias=True,
-#     )
-
-#     print('hires', hires.shape)
-
-#     warped_hires = rearrange(warp_image(hires, ddf), 'c h w -> h w c').numpy()
-#     d['images']['hires'] = warped_hires / warped_hires.max() # numpy conversion has slight overflow issue
-
-#     warped_lowres = rearrange(warp_image(lowres, ddf), 'c h w -> h w c').numpy()
-#     d['images']['lowres'] = warped_lowres / warped_lowres.max() # numpy conversion has slight overflow issue
-
-#     new.obsm['spatial_original'] = new.obsm['spatial'].copy()
-#     x = (torch.tensor(new.obsm['spatial']) * scale).to(torch.long)
-#     x = x[:, [1, 0]] # needs to be (h, w) instead of (w, h)
-#     transformed, mask = warp_pts(x, ddf)
-#     new = new[mask.numpy()]
-#     new.obsm['spatial'] = transformed[:, [1, 0]].numpy()
-
-#     return new
-
-def register_cosmx(adata, ddf):
-    return register_xenium(adata, ddf)
-
-def register_xenium(adata, ddf):
+def register_xenium(adata, ddf, resolution=None):
     new = adata.copy()
 
     new.obsm['spatial_original'] = new.obsm['spatial'].copy()
@@ -218,12 +187,104 @@ def register_xenium(adata, ddf):
     warped_hires = TF.resize(torch.tensor(warped_hires), (int(warped_hires.shape[-2] * sf), int(warped_hires.shape[-1] * sf)), antialias=True).numpy()[0]
     d['images']['hires'] = warped_hires / warped_hires.max() # numpy conversion has slight overflow issue
 
+    if resolution is not None:
+        new.uns['ppm'] = resolution
+
     return new
 
-def register_he(he, ddf):
-    return warp_image(he, ddf, fill_type='max')
+def register_he(img, ddf):
+    return warp_image(img, ddf, fill_type='max')
 
 def register_multiplex(data, ddf):
     if isinstance(data, dict):
         return {c:warp_image(img, ddf) for c, img in data.items()}
     return warp_image(data, ddf)
+
+
+def display_adata(adata, method='both', key='hires', scale=1., ax=None, gamma=1., s=.01):
+    img = next(iter(adata.uns['spatial'].values()))['images']['hires']
+    sf = next(iter(adata.uns['spatial'].values()))['scalefactors']['tissue_hires_scalef']
+    if len(img.shape) == 2:
+        img = utils.rescale(img, scale=scale / sf, dim_order='h w')
+    else:
+        img = utils.rescale(img, scale=scale / sf)
+    img = adjust_gamma(img, gamma)
+
+    pts = adata.obsm['spatial'] * scale
+    
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    if method in ['image', 'both']:
+        ax.imshow(img)
+    if method in ['points', 'both']:
+        ax.scatter(pts[:, 0], pts[:, 1], s=s, c='orange')
+        if method == 'points':
+            ax.invert_yaxis()
+ 
+ 
+def display_data_map(data_map, multiplex_channel='DAPI', vis_scale=.1, gamma=1., figsize=None, share_axis=False):
+    # for sample, mapping in data_map.items():
+        # order = mapping['order']
+        # sid_to_dtypes = {}
+        # for sid in order:
+        #     sid_to_dtypes[sid] = [dtype for dtype, entries in mapping['data'].items() if sid in entries]
+    target_section = data_map['target_sid']
+    target_size = None
+    nrows, ncols = len(data_map['sections']), max([len(item['data']) for item in data_map['sections']])
+    if figsize is None:
+        figsize = (ncols, nrows)
+    fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
+
+    if ncols == 1:
+        axs = rearrange(axs, 'n -> n 1')
+
+    for i, item in enumerate(data_map['sections']):
+        sid = item['sid']
+        for j, mapping in enumerate(item['data']):
+            dtype, filepath = mapping['dtype'], mapping['filepath']
+            print(sid, dtype)
+            ax = axs[i, j]
+            parsed_dtype = utils.parse_dtype(dtype)
+            img, adata = None, None
+            if parsed_dtype == 'visium':
+                adata = visium.adata_from_visium(filepath)
+                display_adata(adata, scale=vis_scale, method='points', ax=ax)
+            elif parsed_dtype == 'xenium':
+                adata = xenium.adata_from_xenium(filepath)
+                display_adata(adata, scale=vis_scale, method='points', ax=ax, gamma=gamma)
+            elif parsed_dtype == 'cosmx':
+                adata = cosmx.adata_from_cosmx(filepath)
+                display_adata(adata, scale=vis_scale, method='points', ax=ax, gamma=gamma)
+            elif parsed_dtype == 'multiplex':
+                img = multiplex.extract_ome_tiff(
+                    filepath, channels=[multiplex_channel], scale=vis_scale
+                )[multiplex_channel]
+                img = adjust_gamma(img, gamma)
+                ax.imshow(img)
+            elif parsed_dtype == 'he':
+                img = he.read_he(filepath, scale=vis_scale)
+                ax.imshow(img)
+            ax.set_title(dtype)
+            if j == 0:
+                ax.set_ylabel(sid, rotation=90)
+        
+        if sid == target_section:
+            if img is not None:
+                target_size = img.shape[:2]
+            else:
+                target_size = visium.get_fullres_size(adata)
+
+    for ax in axs.flatten():
+
+        ax.axis('equal')
+        if share_axis:
+            ax.set_ylim(0, target_size[0])
+            ax.set_xlim(0, target_size[1])
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.title.set_fontsize(6)
+        ax.yaxis.label.set_fontsize(6)
+
+
+        

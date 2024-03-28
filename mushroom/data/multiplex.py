@@ -14,8 +14,10 @@ from tifffile import TiffFile
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, Normalize, RandomCrop, Compose
 
+import mushroom.utils as utils
 from mushroom.data.inference import InferenceTransform, InferenceSectionDataset
 from mushroom.data.utils import LearnerData
+
 
 
 def pixels_per_micron(filepath):
@@ -39,12 +41,18 @@ def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict'
                 r1, r2, c1, c2 = bbox
                 img = img[r1:r2, c1:c2]
 
-            d[c.name] = img
+            if img.dtype != np.uint8:
+                img = img.astype(np.float32)
+                img /= img.max()
+                img *= 255.
+                img = img.astype(np.uint8)
 
             if scale is not None:
                 img = torch.tensor(img).unsqueeze(0)
                 target_size = [int(x * scale) for x in img.shape[-2:]]
-                img = TF.resize(img, size=target_size, antialias=True).squeeze()
+                img = TF.resize(img, size=target_size, antialias=True).squeeze().numpy()
+            
+            d[c.name] = img
 
             imgs.append(img)
             img_channels.append(c.name)
@@ -57,7 +65,7 @@ def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict'
 
     if as_dict:
         return d
-
+    
     return img_channels, np.stack(imgs)
 
 
@@ -135,18 +143,33 @@ def get_common_channels(filepaths, channel_mapping=None):
     channels = sorted([c for c, count in counts.items() if count==len(filepaths)])
     return channels
 
+def get_channel_counts(filepaths, channel_mapping=None):
+    channel_mapping = channel_mapping if channel_mapping is not None else {}
+    pool = []
+    for filepath in filepaths:
+        channels = get_ome_tiff_channels(filepath)
+        channels = [channel_mapping.get(c, c) for c in channels]
+        pool += channels
+    counts = Counter(pool)
+    return counts.most_common()
 
-def get_section_to_image(sid_to_filepaths, channels, channel_mapping=None, scale=.1, contrast_pct=95.):
+
+def get_section_to_image(sid_to_filepaths, channels, channel_mapping=None, scale=.1, contrast_pct=None):
     if channel_mapping is None:
         channel_mapping = {}
 
     section_to_img = {}
     for sid, filepath in sid_to_filepaths.items():
         logging.info(f'generating image data for section {sid}')
-        cs, imgs = extract_ome_tiff(filepath, as_dict=False, scale=scale)
+        # cs, imgs = extract_ome_tiff(filepath, as_dict=False, scale=scale)
+        cs, imgs = extract_ome_tiff(filepath, as_dict=False)
+        imgs = np.stack([utils.rescale(x.astype(np.float32), scale=scale, dim_order='h w', target_dtype=np.float32) for x in imgs])
+        # print(imgs[0].shape, np.unique(imgs[0]))
         cs = [channel_mapping.get(c, c) for c in cs]
         idxs = [cs.index(c) for c in channels]
-        imgs = imgs[idxs].astype(np.float32)
+        imgs = imgs[idxs]
+        # imgs = imgs[idxs].astype(np.float32)
+        # print(np.unique(imgs[0]))
 
         if contrast_pct is not None:
             for i, bw in enumerate(imgs):

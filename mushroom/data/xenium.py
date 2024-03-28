@@ -19,7 +19,7 @@ import mushroom.data.visium as visium
 def get_fullres_size(adata):
     return visium.get_fullres_size(adata)
 
-def adata_from_xenium(filepath, scaler=.1, normalize=False, transcripts=False):
+def adata_from_xenium(filepath, scaler=.1, normalize=False, transcripts=False, base=np.e):
 
     if filepath.split('.')[-1] == 'h5ad':
         adata = sc.read_h5ad(filepath)
@@ -77,8 +77,7 @@ def adata_from_xenium(filepath, scaler=.1, normalize=False, transcripts=False):
         adata.X = adata.X.toarray()
 
     if normalize:
-        # sc.pp.normalize_total(adata, target_sum=1e4)
-        sc.pp.log1p(adata)
+        sc.pp.log1p(adata, base=base)
     
     return adata
 

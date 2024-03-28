@@ -16,19 +16,17 @@ import mushroom.data.multiplex as multiplex
 import mushroom.data.visium as visium
 import mushroom.data.xenium as xenium
 import mushroom.data.cosmx as cosmx
+import mushroom.data.user_points as user_points
 import mushroom.utils as utils
-
-DTYPES = ('multiplex', 'xenium', 'visium', 'he', 'cosmx',)
 
 
 def get_config_info(config, name):
-    assert name in DTYPES, f'data type must be one of {DTYPES}, got {name}'
     sid_to_filepaths = {
-        entry['id']:d['filepath'] for entry in config for d in entry['data']
+        entry['sid']:d['filepath'] for entry in config for d in entry['data']
         if d['dtype']==name
     }
 
-    section_ids = [entry['id'] for entry in config
+    section_ids = [entry['sid'] for entry in config
                    if name in [d['dtype'] for d in entry['data']]]
     
     fps = [d['filepath'] for entry in config for d in entry['data']
@@ -37,18 +35,26 @@ def get_config_info(config, name):
     return sid_to_filepaths, section_ids, fps
 
 def generate_norm_transform(section_to_img):
+    # for sid, img in section_to_img.items():
+    #     print(sid)
+    #     for i, x in enumerate(img):
+    #         # print(x.shape, x.unique())
+    #         plt.imshow(x)
+    #         plt.title(i)
+    #         plt.show()
     means = torch.cat(
         [x.mean(dim=(-2, -1)).unsqueeze(0) for x in section_to_img.values()]
     ).mean(0)
     stds = torch.cat(
         [x.std(dim=(-2, -1)).unsqueeze(0) for x in section_to_img.values()]
     ).mean(0)
+    stds += 1e-16 # make sure we arent dividing by zero if all values in channel are zero
     normalize = Normalize(means, stds)
     return normalize
 
-def get_multiplex_section_to_img(config, ppm, target_ppm, channels=None, channel_mapping=None, contrast_pct=None):
-    logging.info(f'starting multiplex processing')
-    sid_to_filepaths, section_ids, fps = get_config_info(config, 'multiplex')
+def get_multiplex_section_to_img(dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, contrast_pct=None, **kwargs):
+    logging.info(f'starting {dtype_identifier} processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
 
     if channels is None:
         channels = multiplex.get_common_channels(fps, channel_mapping=channel_mapping)
@@ -57,35 +63,40 @@ def get_multiplex_section_to_img(config, ppm, target_ppm, channels=None, channel
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info('processing sections')
+    scaler = 1 / (target_ppm / ppm)
+    print(scaler)
     section_to_img = multiplex.get_section_to_image(
-        sid_to_filepaths, channels, channel_mapping=channel_mapping, scale=target_ppm / ppm, contrast_pct=contrast_pct)
+        sid_to_filepaths, channels, channel_mapping=channel_mapping, scale=scaler, contrast_pct=contrast_pct)
+    print(dtype_identifier, next(iter(section_to_img.values())).shape)
     
     normalize = generate_norm_transform(section_to_img)
     
     return section_to_img, normalize, channels
 
-def get_he_section_to_img(config, ppm, target_ppm):
-    logging.info(f'starting he processing')
-    sid_to_filepaths, section_ids, fps = get_config_info(config, 'he')
+def get_he_section_to_img(dtype_identifier, config, ppm, target_ppm, **kwargs):
+    logging.info(f'starting {dtype_identifier} processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
 
-    # channels = np.asarray(['red', 'green', 'blue'])
     channels = ['red', 'green', 'blue']
 
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info('processing sections')
+    scaler = 1 / (target_ppm / ppm)
+    print(scaler)
     section_to_img = he.get_section_to_image(
-        sid_to_filepaths, scale=target_ppm / ppm)
+        sid_to_filepaths, scale=scaler)
+    print(dtype_identifier, next(iter(section_to_img.values())).shape)
     
     normalize = generate_norm_transform(section_to_img)
     
     return section_to_img, normalize, channels
 
 def get_xenium_section_to_img(
-        config, ppm, target_ppm, channels=None, channel_mapping=None
+        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, tiling_method='grid', tiling_radius=1., log_base=np.e, normalize=True, **kwargs
     ):
-    logging.info(f'starting xenium processing')
-    sid_to_filepaths, section_ids, fps = get_config_info(config, 'xenium')
+    logging.info(f'starting {dtype_identifier} processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
 
     if channels is None:
         channels = xenium.get_common_channels(
@@ -95,28 +106,30 @@ def get_xenium_section_to_img(
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info(f'processing sections')
-    tiling_size = int(ppm / target_ppm)
+    tiling_size = int(target_ppm / ppm)
     section_to_adata = {
-        sid:xenium.adata_from_xenium(fp, normalize=True)
+        sid:xenium.adata_from_xenium(fp, normalize=normalize, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
+    section_to_adata = {sid:adata[:, channels] for sid, adata in section_to_adata.items()}
 
     section_to_img = {}
     for sid, adata in section_to_adata.items():
         logging.info(f'generating image data for section {sid}')
-        img = xenium.to_multiplex(adata, tiling_size=tiling_size, method='grid')
+        img = xenium.to_multiplex(adata, tiling_size=tiling_size, method=tiling_method, radius_sf=tiling_radius)
         img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
         section_to_img[sid] = img
+    print(dtype_identifier, next(iter(section_to_img.values())).shape)
    
     normalize = generate_norm_transform(section_to_img)
 
     return section_to_img, section_to_adata, normalize, channels
 
 def get_cosmx_section_to_img(
-        config, ppm, target_ppm, channels=None, channel_mapping=None
+        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, tiling_method='grid', tiling_radius=1., log_base=np.e, normalize_counts=True, **kwargs
     ):
-    logging.info(f'starting cosmx processing')
-    sid_to_filepaths, section_ids, fps = get_config_info(config, 'cosmx')
+    logging.info(f'starting {dtype_identifier} processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
 
     if channels is None:
         channels = cosmx.get_common_channels(
@@ -126,28 +139,31 @@ def get_cosmx_section_to_img(
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info(f'processing sections')
-    tiling_size = int(ppm / target_ppm)
+    # tiling_size = int(ppm / target_ppm)
+    tiling_size = int(target_ppm / ppm)
     section_to_adata = {
-        sid:cosmx.adata_from_cosmx(fp, normalize=True)
+        sid:cosmx.adata_from_cosmx(fp, normalize=normalize_counts, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
+    section_to_adata = {sid:adata[:, channels] for sid, adata in section_to_adata.items()}
 
     section_to_img = {}
     for sid, adata in section_to_adata.items():
         logging.info(f'generating image data for section {sid}')
-        img = cosmx.to_multiplex(adata, tiling_size=tiling_size, method='grid')
+        img = cosmx.to_multiplex(adata, tiling_size=tiling_size, method=tiling_method, radius_sf=tiling_radius)
         img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
         section_to_img[sid] = img
+    print(dtype_identifier, next(iter(section_to_img.values())).shape)
    
     normalize = generate_norm_transform(section_to_img)
 
     return section_to_img, section_to_adata, normalize, channels
 
 def get_visium_section_to_img(
-        config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02,
+        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02, tiling_method='radius', tiling_radius=1., log_base=np.e, normalize_counts=True, **kwargs
     ):
-    logging.info(f'starting visium processing')
-    sid_to_filepaths, section_ids, fps = get_config_info(config, 'visium')
+    logging.info(f'starting {dtype_identifier} processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
 
     if channels is None:
         channels = visium.get_common_channels(
@@ -158,9 +174,45 @@ def get_visium_section_to_img(
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
     logging.info(f'processing sections')
-    tiling_size = int(ppm / target_ppm)
+    print('ppm', ppm, 'target_ppm', target_ppm)
+    tiling_size = int(target_ppm / ppm)
+    print('tiling size', tiling_size)
     section_to_adata = {
-        sid:visium.adata_from_visium(fp, normalize=True)
+        sid:visium.adata_from_visium(fp, normalize=normalize_counts, base=log_base)
+        for sid, fp in sid_to_filepaths.items()
+    }
+    section_to_adata = {sid:adata[:, channels] for sid, adata in section_to_adata.items()}
+
+    section_to_img = {}
+    for sid, adata in section_to_adata.items():
+        logging.info(f'generating image data for section {sid}')
+        img = visium.to_multiplex(adata, tiling_size=tiling_size, method=tiling_method, radius_sf=tiling_radius)
+        img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
+        section_to_img[sid] = img
+    print(dtype_identifier, next(iter(section_to_img.values())).shape)
+   
+    normalize = generate_norm_transform(section_to_img)
+
+    return section_to_img, section_to_adata, normalize, channels
+
+def get_points_section_to_img(
+        dtype_identifier, config, ppm, target_ppm, channels=None, channel_mapping=None, pct_expression=.02, tiling_method='grid', tiling_radius=1., log_base=np.e, normalize_counts=True, **kwargs
+    ):
+    logging.info(f'starting {dtype_identifier} processing')
+    sid_to_filepaths, section_ids, fps = get_config_info(config, dtype_identifier)
+
+    if channels is None:
+        channels = user_points.get_common_channels(
+            fps, channel_mapping=channel_mapping, pct_expression=pct_expression
+        )
+
+    logging.info(f'using {len(channels)} channels')
+    logging.info(f'{len(section_ids)} sections detected: {section_ids}')
+
+    logging.info(f'processing sections')
+    tiling_size = int(target_ppm / ppm)
+    section_to_adata = {
+        sid:user_points.adata_from_point_based(fp, normalize=normalize_counts, base=log_base)
         for sid, fp in sid_to_filepaths.items()
     }
 
@@ -169,7 +221,7 @@ def get_visium_section_to_img(
     section_to_img = {}
     for sid, adata in section_to_adata.items():
         logging.info(f'generating image data for section {sid}')
-        img = visium.to_multiplex(adata, tiling_size=tiling_size)
+        img = user_points.to_multiplex(adata, tiling_size=tiling_size, method=tiling_method, radius_sf=tiling_radius)
         img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
         section_to_img[sid] = img
    
@@ -178,11 +230,11 @@ def get_visium_section_to_img(
     return section_to_img, section_to_adata, normalize, channels
 
 
-def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, contrast_pct=None, pct_expression=.02):
 
+def get_learner_data(config, ppm, target_ppm, tile_size, data_mask=None, **kwargs):
     # all images must be same size
     dtypes = sorted({d['dtype'] for entry in config for d in entry['data']})
-    section_ids = [entry['id'] for entry in config]
+    section_ids = [entry['sid'] for entry in config]
 
     dtype_to_section_to_img = {}
     dtype_to_norm = {}
@@ -190,32 +242,48 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, c
     dtype_to_channels = {}
 
     for dtype in dtypes:
-        if dtype == 'multiplex':
-            section_to_img, norm, channels = get_multiplex_section_to_img(config, ppm, target_ppm, channel_mapping=channel_mapping, contrast_pct=contrast_pct)
+        parsed_dtype = utils.parse_dtype(dtype)
+        if parsed_dtype == 'multiplex':
+            section_to_img, norm, channels = get_multiplex_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
             section_to_adata = None
-        elif dtype == 'he':
-            section_to_img, norm, channels = get_he_section_to_img(config, ppm, target_ppm)
+        elif parsed_dtype == 'he':
+            section_to_img, norm, channels = get_he_section_to_img(dtype, config, ppm, target_ppm, **kwargs)
             section_to_adata = None
-        elif dtype == 'xenium':
-            section_to_img, section_to_adata, norm, channels = get_xenium_section_to_img(config, ppm, target_ppm, channel_mapping=None)
-        elif dtype == 'cosmx':
-            section_to_img, section_to_adata, norm, channels = get_cosmx_section_to_img(config, ppm, target_ppm, channel_mapping=None)
-        elif dtype == 'visium':
-            section_to_img, section_to_adata, norm, channels = get_visium_section_to_img(config, ppm, target_ppm, channel_mapping=None, pct_expression=pct_expression)
+        elif parsed_dtype == 'xenium':
+            section_to_img, section_to_adata, norm, channels = get_xenium_section_to_img(dtype, config, ppm, target_ppm, normalize_counts=True, **kwargs)
+        elif parsed_dtype == 'cosmx':
+            section_to_img, section_to_adata, norm, channels = get_cosmx_section_to_img(dtype, config, ppm, target_ppm, normalize_counts=True, **kwargs)
+        elif parsed_dtype == 'visium':
+            section_to_img, section_to_adata, norm, channels = get_visium_section_to_img(dtype, config, ppm, target_ppm, normalize_counts=True, **kwargs)
+        elif parsed_dtype == 'points':
+            section_to_img, section_to_adata, norm, channels = get_points_section_to_img(dtype, config, ppm, target_ppm, normalize_counts=True, **kwargs)
         else:
             raise RuntimeError(f'dtype {dtype} is not a valid data type')
         
+        img = next(iter(section_to_img.values()))
+        if img.shape[-2] <= tile_size or img.shape[-1] <= tile_size:
+            hw = (img.shape[-2], img.shape[-1])
+            raise RuntimeError(f'target resolution must result in an image shape with dimensions larger than num patches. num patches was {tile_size} and a target resolution of {target_ppm} results in an image shape of {hw}')
+
         dtype_to_section_to_img[dtype] = section_to_img
         dtype_to_norm[dtype] = norm
         dtype_to_section_to_adata[dtype] = section_to_adata
         dtype_to_channels[dtype] = channels
 
     # image sizes are a few pixels off sometimes, adjusting for that
+    # also masking if we need to
     sizes = [(img.shape[-2], img.shape[-1]) for section_to_img in dtype_to_section_to_img.values() for img in section_to_img.values()]
     idx = np.argmax([np.sum(x) for x in sizes])
     target_size = sizes[idx]
+    if data_mask is not None:
+        data_mask = utils.rescale(data_mask, size=target_size, dim_order='h w', target_dtype=data_mask.dtype)
     for dtype, section_to_img in dtype_to_section_to_img.items():
         section_to_img = {sid:utils.rescale(img, size=target_size, dim_order='c h w', target_dtype=img.dtype) for sid, img in section_to_img.items()}
+
+        if data_mask is not None:
+            for sid, img in section_to_img.items():
+                img[:, ~data_mask] = img.min()
+
         dtype_to_section_to_img[dtype] = section_to_img
     assert len(set((img.shape[-2], img.shape[-1]) for section_to_img in dtype_to_section_to_img.values() for img in section_to_img.values())) == 1
 
@@ -237,6 +305,7 @@ def get_learner_data(config, ppm, target_ppm, tile_size, channel_mapping=None, c
     
     learner_data = LearnerData(
         dtype_to_section_to_img=dtype_to_section_to_img,
+        dtype_to_section_to_adata=dtype_to_section_to_adata,
         train_transform=train_transform,
         inference_transform=inference_transform,
         train_ds=train_ds,
@@ -498,6 +567,7 @@ class ImageInferenceDataset(Dataset):
 @dataclass
 class LearnerData:
     dtype_to_section_to_img: Mapping
+    dtype_to_section_to_adata: Mapping
     train_transform: ImageTrainingTransform
     inference_transform: ImageInferenceTransform
     train_ds: ImageTrainingDataset

@@ -20,7 +20,8 @@ def pixels_per_micron(adata):
     if isinstance(adata, str):
         adata = adata_from_visium(adata)
     scalefactors = next(iter(adata.uns['spatial'].values()))['scalefactors']
-    return scalefactors['spot_diameter_fullres'] / 65. # each spot is 65 microns wide
+    # return scalefactors['spot_diameter_fullres'] / 55. # each spot is 55 microns wide
+    return 55.  / scalefactors['spot_diameter_fullres'] # each spot is 55 microns wide
 
 def get_fullres_size(adata):
     d = next(iter(adata.uns['spatial'].values()))
@@ -31,7 +32,7 @@ def get_fullres_size(adata):
     )
     return fullres_size
 
-def adata_from_visium(filepath, normalize=False):
+def adata_from_visium(filepath, normalize=False, base=np.e):
     ext = filepath.split('.')[-1]
     if ext == 'h5ad':
         adata = sc.read_h5ad(filepath)
@@ -49,8 +50,7 @@ def adata_from_visium(filepath, normalize=False):
         adata.X = adata.X.toarray()
 
     if normalize:
-        # sc.pp.normalize_total(adata, target_sum=1e4)
-        sc.pp.log1p(adata)
+        sc.pp.log1p(adata, base=base)
 
     adata.uns['ppm'] = pixels_per_micron(adata)
     
