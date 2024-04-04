@@ -368,7 +368,7 @@ class Mushroom(object):
             spore = self.dtype_to_spore[dtype]
             return spore.display_cluster_probs(level=level, return_axs=return_axs)
 
-    def display_clusters(self, dtype, level=-1, section_idxs=None, section_ids=None, cmap=None, figsize=None, horizontal=True, preserve_indices=True, return_axs=False):
+    def display_clusters(self, dtype, level=-1, section_idxs=None, section_ids=None, cmap=None, figsize=None, horizontal=True, preserve_indices=True, return_axs=False, use_hierarchy=True, discard_max=False):
         if dtype == 'integrated':
             clusters = self.integrated_clusters[level]
             label_to_hierarchy = None
@@ -376,14 +376,17 @@ class Mushroom(object):
             clusters = self.dtype_to_spore[dtype].clusters[level]
             label_to_hierarchy = self.dtype_to_spore[dtype].cluster_to_agg[level]
 
+            if not use_hierarchy:
+                label_to_hierarchy = None
+
         if section_ids is None and section_idxs is None:
             return vis_utils.display_clusters(
-                clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=label_to_hierarchy)
+                clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=label_to_hierarchy, discard_max=discard_max)
         else:
             if section_idxs is None:
                 section_idxs = [i for i, sid in enumerate(self.section_ids) if sid in section_ids]
             return vis_utils.display_clusters(
-                clusters[section_idxs], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=label_to_hierarchy)
+                clusters[section_idxs], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=label_to_hierarchy, discard_max=discard_max)
         
     def display_volumes(self, positions=None, dtype_to_volume=None, figsize=None, return_axs=False, level=None):
         if dtype_to_volume is None:
