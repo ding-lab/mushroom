@@ -97,7 +97,7 @@ def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=True, label_to_h
         
         if discard_max:
             if l == max_label:
-                c = [1., 1., 1.]
+                c = [0., 0., 0.]
         new[labeled==l] = c
     return new
 

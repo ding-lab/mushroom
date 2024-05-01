@@ -47,6 +47,7 @@ setup(
         'timm',
         'leidenalg',
         'igraph',
+        'spatialdata',
     ],
     extras_require={
         'viz': [
