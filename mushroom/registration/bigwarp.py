@@ -75,7 +75,7 @@ def is_valid(pt, size):
     return (r >= 0) & (r < size[-2]) & (c >= 0) & (c < size[-1])
 
 
-def warp_pts(pts, ddf):
+def warp_pts(pts, ddf, radius=1):
     """
     assumes 2d transform
     
@@ -88,8 +88,8 @@ def warp_pts(pts, ddf):
     max_r, max_c = pts.max(dim=0).values
     img = torch.zeros((max_r + 1, max_c + 1), dtype=torch.long)
     for i, (r, c) in enumerate(pts):
-        r1, r2 = max(0, r - 1), min(max_r + 1, r + 1)
-        c1, c2 = max(0, c - 1), min(max_c + 1, c + 1)
+        r1, r2 = max(0, r - radius), min(max_r + 1, r + radius)
+        c1, c2 = max(0, c - radius), min(max_c + 1, c + radius)
         img[r1:r2, c1:c2] = i + 1
 
     img = warp_image(img, ddf)
@@ -166,15 +166,15 @@ def register_visium(to_transform, ddf, resolution=None):
 
     return adata
 
-def register_cosmx(adata, ddf, resolution=None):
-    return register_xenium(adata, ddf, resolution=resolution)
+def register_cosmx(adata, ddf, resolution=None, radius=10):
+    return register_xenium(adata, ddf, resolution=resolution, radius=radius)
 
-def register_xenium(adata, ddf, resolution=None):
+def register_xenium(adata, ddf, resolution=None, radius=1):
     new = adata.copy()
 
     new.obsm['spatial_original'] = new.obsm['spatial'].copy()
     x = new.obsm['spatial'][:, [1, 0]]
-    transformed, mask = warp_pts(x, ddf)
+    transformed, mask = warp_pts(x, ddf, radius=radius)
     new = new[mask.numpy()]
     new.obsm['spatial'] = transformed[:, [1, 0]].numpy()
 
