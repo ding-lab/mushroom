@@ -294,7 +294,7 @@ class Mushroom(object):
 
         return dtype_to_df
 
-    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=True, integrate=True, dist_thresh=.4, n_iterations=10, resolution=2., dtype_to_weight=None, kernel=None, kernel_size=None):
+    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=True, integrate=True, dist_thresh=.4, n_iterations=10, resolution=2., dtype_to_weight=None, kernel=None, kernel_size=None, gene_idx=None):
         dtypes, spores = zip(*self.dtype_to_spore.items())
         if self.integrated_clusters is None:
             self.integrated_clusters = [None for i in range(len(next(iter(self.dtype_to_spore.values())).clusters))]
@@ -320,7 +320,9 @@ class Mushroom(object):
             logging.info(f'generating volume for {dtype} spore')
             positions = [p for p, (_, dt) in zip(section_positions, sids) if dt==dtype]
 
-            if use_probs:
+            if gene_idx is not None:
+                pass
+            elif use_probs:
                 clusters = spore.cluster_probs[level].copy()
             else:
                 clusters = spore.clusters[level].copy()
