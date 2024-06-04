@@ -12,6 +12,7 @@ import torch
 import torchvision.transforms.functional as TF
 import tifffile
 from torchvision.transforms import Normalize
+from einops import rearrange
 
 from mushroom.data.utils import LearnerData
 import mushroom.data.visium as visium
@@ -43,17 +44,28 @@ def adata_from_xenium(filepath, scaler=.1, normalize=False, transcripts=False, b
             adata.uns['transcripts'] = df.copy()
 
 
-        tf = tifffile.TiffFile(os.path.join(filepath, 'morphology_focus.ome.tif'))
-        ppm = 1 / float(re.findall(r'PhysicalSizeX="(.*)".*PhysicalSizeY', tf.ome_metadata)[0])
+        if os.path.exists(os.path.join(filepath, 'morphology_focus.ome.tif')):
+            fp = os.path.join(filepath, 'morphology_focus.ome.tif')
+            dim_order = 'w c'
+        elif os.path.exists(os.path.join(filepath, 'morphology.ome.tif')):
+            fp = os.path.join(filepath, 'morphology_focus', 'morphology_focus_0000.ome.tif')
+            dim_order = 'c h w'
+        else:
+            raise RuntimeError(f'Could not find morphology.ome.tif')
 
-        img = tifffile.imread(
-        os.path.join(filepath, 'morphology_focus.ome.tif')).astype(np.float32)
+        tf = tifffile.TiffFile(fp)
+        ppm = 1 / float(re.findall(r'PhysicalSizeX="([\.0-9]*)" ', tf.ome_metadata)[0])
+
+        img = tifffile.imread(fp).astype(np.float32)
+        if dim_order == 'c h w':
+            img = img[0] # just take first channel
 
         hires = TF.resize(
             torch.tensor(img).unsqueeze(0),
-            (int(img.shape[0] * scaler), int(img.shape[1] * scaler)),
+            (int(img.shape[-2] * scaler), int(img.shape[-1] * scaler)),
             antialias=True
         ).squeeze().numpy()
+
 
         if hires.max() > 255.: # check for uint16
             hires /= 65535.

@@ -105,7 +105,7 @@ def get_xenium_section_to_img(
     logging.info(f'using {len(channels)} channels')
     logging.info(f'{len(section_ids)} sections detected: {section_ids}')
 
-    logging.info(f'processing sections')
+    logging.info(f'processing sections') 
     tiling_size = int(target_ppm / ppm)
     section_to_adata = {
         sid:xenium.adata_from_xenium(fp, normalize=normalize, base=log_base)
@@ -116,6 +116,9 @@ def get_xenium_section_to_img(
     section_to_img = {}
     for sid, adata in section_to_adata.items():
         logging.info(f'generating image data for section {sid}')
+        print(tiling_size, tiling_method, adata.shape)
+        print(adata.obsm['spatial'].shape)
+        print(adata.obsm['spatial'].max(0))
         img = xenium.to_multiplex(adata, tiling_size=tiling_size, method=tiling_method, radius_sf=tiling_radius)
         img = torch.tensor(rearrange(img, 'h w c -> c h w'), dtype=torch.float32)
         section_to_img[sid] = img
