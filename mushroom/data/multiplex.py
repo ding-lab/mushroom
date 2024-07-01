@@ -8,7 +8,7 @@ import torch.nn as nn
 import torchvision.transforms.functional as TF
 import tifffile
 from einops import rearrange
-from ome_types import from_xml
+from ome_types import from_xml, model, to_xml
 from skimage.exposure import rescale_intensity
 from tifffile import TiffFile
 from torch.utils.data import DataLoader, Dataset
@@ -82,10 +82,59 @@ def get_size(filepath):
     return (im.pixels.size_c, im.pixels.size_y, im.pixels.size_x)
 
 
-def write_basic_ome_tiff(filepath, data, channels, pix_per_micron=1.):
+def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
     """
     data - (n_channels, height, width)
     """
+    assert data.shape[0] == len(channels), f'number of channels is {len(channels)}, must be same length as first dimension of data which is {data.shape}'
+
+    dtype_name = str(np.dtype(data.dype))
+    if 'int' in dtype_name:
+        assert dtype_name in ['int8', 'int16', 'int32', 'uint8', 'uint16', 'uint32']
+    elif 'float' in dtype_name:
+        dtype_name = 'float'
+    elif dtype_name == 'bool':
+        dtype_name = 'bit'
+    else:
+        raise ValueError(f'dtype {data.dtype} was unable to be saved as ome')
+
+    o = model.OME()
+    o.images.append(
+        model.Image(
+            id='Image:0',
+            pixels=model.Pixels(
+                dimension_order='XYCZT',
+                size_c=len(channels),
+                size_t=1,
+                size_x=data.shape[2],
+                size_y=data.shape[1],
+                type=dtype_name,
+                big_endian=False,
+                channels=[model.Channel(id=f'Channel:{i}', name=c) for i, c in enumerate(channels)],
+                physical_size_x=microns_per_pixel,
+                physical_size_y=microns_per_pixel,
+                physical_size_x_unit='µm',
+                physical_size_y_unit='µm'
+            )
+        )
+    )
+
+    im = o.images[0]
+    for i in range(len(im.pixels.channels)):
+        im.pixels.planes.append(model.Plane(the_c=i, the_t=0, the_z=0))
+    im.pixels.tiff_data_blocks.append(model.TiffData(plane_count=len(im.pixels.planes)))
+
+    with tifffile.TiffWriter(filepath, ome=True, bigtiff=True) as out_tif:
+        opts = {
+            'compression': 'LZW',
+        }
+        out_tif.write(
+            rearrange(data, 'c y x -> 1 1 c y x'),
+            **opts
+        )
+        xml_str = to_xml(o)
+        out_tif.overwrite_description(xml_str.encode())
+
     with tifffile.TiffWriter(filepath, bigtiff=True) as tif:
         metadata={
             'axes': 'TCYXS',
