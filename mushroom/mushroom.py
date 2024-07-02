@@ -28,8 +28,8 @@ import mushroom.utils as utils
 
 
 DEFAULT_CONFIG = {
-    'sections': None,
-    'dtype_to_chkpt': None,
+    'sections': None, # section config
+    'dtype_to_chkpt': None, # dictionary for data type specific mushroom models
     'dtype_specific_params': {
         'visium': {
             'trainer_kwargs': {
@@ -268,6 +268,9 @@ class Mushroom(object):
             'dtype_to_cluster_to_agg': dtype_to_cluster_to_agg
         }
 
+        # yaml doesn't like to save path objects
+        config['trainer_kwargs']['out_dir'] = str(config['trainer_kwargs']['out_dir'])
+        
         yaml.safe_dump(
             config,
             open(os.path.join(output_dir, f'config.yaml'), 'w')
@@ -386,7 +389,8 @@ class Mushroom(object):
                 clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=label_to_hierarchy, discard_max=discard_max)
         else:
             if section_idxs is None:
-                section_idxs = [i for i, sid in enumerate(self.section_ids) if sid in section_ids]
+                sids = self.section_ids if dtype == 'intergrated' else [sid for sid in self.section_ids if sid[1] == dtype]
+                section_idxs = [i for i, sid in enumerate(sids) if sid in section_ids]
             return vis_utils.display_clusters(
                 clusters[section_idxs], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=label_to_hierarchy, discard_max=discard_max)
         
