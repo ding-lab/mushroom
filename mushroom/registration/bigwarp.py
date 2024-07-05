@@ -75,7 +75,7 @@ def is_valid(pt, size):
     return (r >= 0) & (r < size[-2]) & (c >= 0) & (c < size[-1])
 
 
-def warp_pts(pts, ddf):
+def warp_pts(pts, ddf, radius=1):
     """
     assumes 2d transform
     
@@ -88,8 +88,8 @@ def warp_pts(pts, ddf):
     max_r, max_c = pts.max(dim=0).values
     img = torch.zeros((max_r + 1, max_c + 1), dtype=torch.long)
     for i, (r, c) in enumerate(pts):
-        r1, r2 = max(0, r - 1), min(max_r + 1, r + 1)
-        c1, c2 = max(0, c - 1), min(max_c + 1, c + 1)
+        r1, r2 = max(0, r - radius), min(max_r + 1, r + radius)
+        c1, c2 = max(0, c - radius), min(max_c + 1, c + radius)
         img[r1:r2, c1:c2] = i + 1
 
     img = warp_image(img, ddf)
@@ -119,13 +119,7 @@ def warp_pts(pts, ddf):
 # def register_visium(adata, ddf, target_pix_per_micron=1., moving_pix_per_micron=None):
 def register_visium(to_transform, ddf, resolution=None):
     adata = to_transform.copy()
-    # if moving_pix_per_micron is None:
-    #     moving_pix_per_micron = next(iter(
-    #         adata.uns['spatial'].values()))['scalefactors']['spot_diameter_fullres'] / 65.
-    # print(target_pix_per_micron, moving_pix_per_micron)
-    # scale = tissue_hires_scalef
-    # scale = target_pix_per_micron / moving_pix_per_micron # bring to target img resolution
-    # scale = moving_pix_per_micron / target_pix_per_micron # bring to target img resolution
+
     d = next(iter(adata.uns['spatial'].values()))
     scalefactors = d['scalefactors']
 
@@ -166,17 +160,20 @@ def register_visium(to_transform, ddf, resolution=None):
 
     return adata
 
-def register_cosmx(adata, ddf, resolution=None):
-    return register_xenium(adata, ddf, resolution=resolution)
+def register_cosmx(adata, ddf, resolution=None, radius=10):
+    return register_xenium(adata, ddf, resolution=resolution, radius=radius)
 
-def register_xenium(adata, ddf, resolution=None):
+def register_xenium(adata, ddf, resolution=None, radius=1, coordinate_sf=None):
     new = adata.copy()
 
     new.obsm['spatial_original'] = new.obsm['spatial'].copy()
     x = new.obsm['spatial'][:, [1, 0]]
-    transformed, mask = warp_pts(x, ddf)
+    if coordinate_sf is not None:
+        x *= coordinate_sf
+    transformed, mask = warp_pts(x, ddf, radius=radius)
     new = new[mask.numpy()]
     new.obsm['spatial'] = transformed[:, [1, 0]].numpy()
+
 
     d = next(iter(new.uns['spatial'].values()))
     sf = d['scalefactors']['tissue_hires_scalef']
@@ -186,6 +183,7 @@ def register_xenium(adata, ddf, resolution=None):
     warped_hires = warp_image(hires, ddf)
     warped_hires = TF.resize(torch.tensor(warped_hires), (int(warped_hires.shape[-2] * sf), int(warped_hires.shape[-1] * sf)), antialias=True).numpy()[0]
     d['images']['hires'] = warped_hires / warped_hires.max() # numpy conversion has slight overflow issue
+
 
     if resolution is not None:
         new.uns['ppm'] = resolution

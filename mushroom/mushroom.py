@@ -28,8 +28,8 @@ import mushroom.utils as utils
 
 
 DEFAULT_CONFIG = {
-    'sections': None,
-    'dtype_to_chkpt': None,
+    'sections': None, # section config
+    'dtype_to_chkpt': None, # dictionary for data type specific mushroom models
     'dtype_specific_params': {
         'visium': {
             'trainer_kwargs': {
@@ -268,6 +268,9 @@ class Mushroom(object):
             'dtype_to_cluster_to_agg': dtype_to_cluster_to_agg
         }
 
+        # yaml doesn't like to save path objects
+        config['trainer_kwargs']['out_dir'] = str(config['trainer_kwargs']['out_dir'])
+        
         yaml.safe_dump(
             config,
             open(os.path.join(output_dir, f'config.yaml'), 'w')
@@ -294,7 +297,7 @@ class Mushroom(object):
 
         return dtype_to_df
 
-    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=True, integrate=True, dist_thresh=.4, n_iterations=10, resolution=2., dtype_to_weight=None, kernel=None, kernel_size=None):
+    def generate_interpolated_volumes(self, z_scaler=.1, level=-1, use_probs=True, integrate=True, dist_thresh=.4, n_iterations=10, resolution=2., dtype_to_weight=None, kernel=None, kernel_size=None, gene_idx=None):
         dtypes, spores = zip(*self.dtype_to_spore.items())
         if self.integrated_clusters is None:
             self.integrated_clusters = [None for i in range(len(next(iter(self.dtype_to_spore.values())).clusters))]
@@ -320,7 +323,9 @@ class Mushroom(object):
             logging.info(f'generating volume for {dtype} spore')
             positions = [p for p, (_, dt) in zip(section_positions, sids) if dt==dtype]
 
-            if use_probs:
+            if gene_idx is not None:
+                pass
+            elif use_probs:
                 clusters = spore.cluster_probs[level].copy()
             else:
                 clusters = spore.clusters[level].copy()
@@ -368,7 +373,7 @@ class Mushroom(object):
             spore = self.dtype_to_spore[dtype]
             return spore.display_cluster_probs(level=level, return_axs=return_axs)
 
-    def display_clusters(self, dtype, level=-1, section_idxs=None, section_ids=None, cmap=None, figsize=None, horizontal=True, preserve_indices=True, return_axs=False):
+    def display_clusters(self, dtype, level=-1, section_idxs=None, section_ids=None, cmap=None, figsize=None, horizontal=True, preserve_indices=True, return_axs=False, use_hierarchy=True, discard_max=False):
         if dtype == 'integrated':
             clusters = self.integrated_clusters[level]
             label_to_hierarchy = None
@@ -376,14 +381,18 @@ class Mushroom(object):
             clusters = self.dtype_to_spore[dtype].clusters[level]
             label_to_hierarchy = self.dtype_to_spore[dtype].cluster_to_agg[level]
 
+            if not use_hierarchy:
+                label_to_hierarchy = None
+
         if section_ids is None and section_idxs is None:
             return vis_utils.display_clusters(
-                clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=label_to_hierarchy)
+                clusters, cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=label_to_hierarchy, discard_max=discard_max)
         else:
             if section_idxs is None:
-                section_idxs = [i for i, sid in enumerate(self.section_ids) if sid in section_ids]
+                sids = self.section_ids if dtype == 'intergrated' else [sid for sid in self.section_ids if sid[1] == dtype]
+                section_idxs = [i for i, sid in enumerate(sids) if sid in section_ids]
             return vis_utils.display_clusters(
-                clusters[section_idxs], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=label_to_hierarchy)
+                clusters[section_idxs], cmap=cmap, figsize=figsize, horizontal=horizontal, preserve_indices=preserve_indices, return_axs=return_axs, label_to_hierarchy=label_to_hierarchy, discard_max=discard_max)
         
     def display_volumes(self, positions=None, dtype_to_volume=None, figsize=None, return_axs=False, level=None):
         if dtype_to_volume is None:

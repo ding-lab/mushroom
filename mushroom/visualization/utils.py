@@ -71,7 +71,7 @@ def get_hierarchical_cmap(label_to_hierarchy):
     label_to_color = {k:v[:3] for k, v in label_to_color.items()}
     return label_to_color
 
-def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=True, label_to_hierarchy=None):
+def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=True, label_to_hierarchy=None, discard_max=False):
     if isinstance(labeled, torch.Tensor):
         labeled = labeled.numpy()
     
@@ -81,6 +81,9 @@ def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=True, label_to_h
         cmap = get_cmap(labeled.max() + 1) if cmap is None else cmap
     else:
         cmap = get_cmap(len(np.unique(labeled))) if cmap is None else cmap
+    
+    ids, counts = np.unique(labeled, return_counts=True, )
+    max_label = ids[counts.argmax()]
 
     labels = sorted(np.unique(labeled))
     if len(cmap) < len(labels):
@@ -91,11 +94,15 @@ def display_labeled_as_rgb(labeled, cmap=None, preserve_indices=True, label_to_h
             c = cmap[l]
         else:
             c = cmap[i]
+        
+        if discard_max:
+            if l == max_label:
+                c = [0., 0., 0.]
         new[labeled==l] = c
     return new
 
 
-def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserve_indices=False, return_axs=False, label_to_hierarchy=None):
+def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserve_indices=False, return_axs=False, label_to_hierarchy=None, discard_max=False):
     if figsize is None:
         figsize = (clusters.shape[0] * 2, 5)
         if not horizontal:
@@ -113,9 +120,14 @@ def display_clusters(clusters, cmap=None, figsize=None, horizontal=True, preserv
             cmap = get_cmap(len(np.unique(clusters)))
     elif isinstance(cmap, str):
         cmap = sns.color_palette(cmap)
+    
+    # if discard_max:
+    #     ids, counts = np.unique(clusters, return_counts=True, )
+    #     l = ids[counts.argmax()]
+    #     cmap[l] = [1., 1., 1.]
 
     for i, labeled in enumerate(clusters):
-        axs[i].imshow(display_labeled_as_rgb(labeled, cmap=cmap, preserve_indices=preserve_indices, label_to_hierarchy=label_to_hierarchy))
+        axs[i].imshow(display_labeled_as_rgb(labeled, cmap=cmap, preserve_indices=preserve_indices, label_to_hierarchy=label_to_hierarchy, discard_max=discard_max))
         axs[i].set_xticks([])
         axs[i].set_yticks([])
 

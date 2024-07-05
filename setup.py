@@ -10,7 +10,7 @@ with open(path.join(here, 'README.md')) as f:
 setup(
     # $ pip install mushroom
     name='mushroom',
-    version='0.0.3',
+    version='0.0.4',
     description='A Python library for clustering and analysis of multi-modal 3D serial section experiments.',
     long_description=long_description,
     long_description_content_type='text/markdown',
@@ -47,6 +47,7 @@ setup(
         'timm',
         'leidenalg',
         'igraph',
+        'spatialdata==0.1.2',
     ],
     extras_require={
         'viz': [
