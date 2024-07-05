@@ -9,6 +9,14 @@ Under active development
 pip install -e https://github.com/ding-lab/mushroom
 ```
 
+## Tutorial
+
+API subject to change...
+
+[Registering multi-modal serial section data](https://github.com/ding-lab/mushroom/blob/main/notebooks/tutorials/data_preperation_and_registration.ipynb)
+
+[Running Mushroom](https://github.com/ding-lab/mushroom/blob/main/notebooks/tutorials/mushroom_tutorial.ipynb)
+
 ## Manuscript materials
 
 Location of materials for **Spatial clonal evolution and clone-specific microenvironment interactions within three-dimensional tumor structures**
