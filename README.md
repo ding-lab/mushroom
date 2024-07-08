@@ -5,6 +5,8 @@ Under active development
 
 ## Library installation
 
+Although not always neccessary, we recommend installing into a fresh environment when possible to avoid installation issues.
+
 ```bash
 pip install -e https://github.com/ding-lab/mushroom
 ```
