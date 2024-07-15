@@ -21,7 +21,7 @@ def get_fullres_size(adata):
     return visium.get_fullres_size(adata)
 
 def display_fovs(cosmx_dir):
-    fov_metadata_fp = list(utils.listfiles(cosmx_dir, regex=r'fov_positions_file.csv.gz$'))[0]
+    fov_metadata_fp = list(utils.listfiles(os.path.join(cosmx_dir, 'flatfiles'), regex=r'fov_positions_file.csv.gz$'))[0]
     fov_metadata = pd.read_csv(fov_metadata_fp)
 
     sns.scatterplot(data=fov_metadata, x='X_mm', y='Y_mm')
