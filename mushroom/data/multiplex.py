@@ -88,7 +88,7 @@ def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
     """
     assert data.shape[0] == len(channels), f'number of channels is {len(channels)}, must be same length as first dimension of data which is {data.shape}'
 
-    dtype_name = str(np.dtype(data.dype))
+    dtype_name = str(np.dtype(data.dtype))
     if 'int' in dtype_name:
         assert dtype_name in ['int8', 'int16', 'int32', 'uint8', 'uint16', 'uint32']
     elif 'float' in dtype_name:
@@ -108,6 +108,7 @@ def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
                 size_t=1,
                 size_x=data.shape[2],
                 size_y=data.shape[1],
+                size_z=1,
                 type=dtype_name,
                 big_endian=False,
                 channels=[model.Channel(id=f'Channel:{i}', name=c) for i, c in enumerate(channels)],
@@ -134,21 +135,6 @@ def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
         )
         xml_str = to_xml(o)
         out_tif.overwrite_description(xml_str.encode())
-
-    with tifffile.TiffWriter(filepath, bigtiff=True) as tif:
-        metadata={
-            'axes': 'TCYXS',
-            'Channel': {'Name': channels},
-            'PhysicalSizeX': pix_per_micron,
-            'PhysicalSizeXUnit': 'µm',
-            'PhysicalSizeY': pix_per_micron,
-            'PhysicalSizeYUnit': 'µm',
-        }
-        tif.write(
-            rearrange(data, 'c h w -> 1 c h w 1'),
-            metadata=metadata,
-            compression='LZW',
-        )
 
 
 def make_pseudo(channel_to_img, cmap=None, contrast_pct=20., contrast_mapping=None):

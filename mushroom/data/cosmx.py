@@ -26,7 +26,8 @@ def display_fovs(cosmx_dir, flatfiles_dir=None):
     dirpath = Path(dirpath)
     assert dirpath.is_dir(), f'{dirpath} is not a directory'
 
-    fov_metadata_fp = list(utils.listfiles(dirpath, regex=r'fov_positions_file.csv.gz$'))[0]
+    fov_metadata_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*fov_positions_file.csv.gz$'))[0]
+    print(fov_metadata_fp)
     fov_metadata = pd.read_csv(fov_metadata_fp)
 
     sns.scatterplot(data=fov_metadata, x='X_mm', y='Y_mm')
@@ -44,9 +45,9 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
         dirpath = Path(dirpath)
         assert dirpath.is_dir(), f'flatfiles directory does not exist in {filepath}'
         
-        metadata_fp = list(utils.listfiles(dirpath, regex=r'metadata_file.csv.gz$'))[0]
-        exp_fp = list(utils.listfiles(dirpath, regex=r'exprMat_file.csv.gz$'))[0]
-        fov_metadata_fp = list(utils.listfiles(dirpath, regex=r'fov_positions_file.csv.gz$'))[0]
+        metadata_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*metadata_file.csv.gz$'))[0]
+        exp_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*exprMat_file.csv.gz$'))[0]
+        fov_metadata_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*fov_positions_file.csv.gz$'))[0]
 
         morphology_dir = filepath if morphology_dir is None else morphology_dir
         morphology_dir = Path(morphology_dir)
