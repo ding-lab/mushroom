@@ -48,6 +48,7 @@ setup(
         'leidenalg',
         'igraph',
         'spatialdata==0.1.2',
+        'pydantic-extra-types',
     ],
     extras_require={
         'viz': [
