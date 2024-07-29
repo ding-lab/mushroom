@@ -207,14 +207,15 @@ def rescale(x, scale=.1, size=None, dim_order='h w c', target_dtype=torch.uint8,
     if size is None:
         size = (int(x.shape[-2] * scale), int(x.shape[-1] * scale))
 
+    
     dtype_map = { # quick and dirty dtype mapping for common np dtypes
-        np.uint8: torch.uint8,
-        np.float32: torch.float32,
-        np.float64: torch.float64,
-        np.int64: torch.int64,
-        bool: torch.bool,
+        np.dtype(np.uint8): torch.uint8,
+        np.dtype(np.float32): torch.float32,
+        np.dtype(np.float64): torch.float64,
+        np.dtype(np.int64): torch.int64,
+        np.dtype(bool): torch.bool,
     }
-    target_dtype = dtype_map.get(target_dtype, target_dtype)
+    target_dtype = dtype_map.get(np.dtype(target_dtype) if isinstance(target_dtype, np.dtype) else target_dtype, target_dtype)
 
     x = TF.resize(x, size, antialias=antialias, interpolation=interpolation)
     
