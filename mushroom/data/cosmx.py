@@ -3,6 +3,7 @@ import json
 import os
 import re
 from collections import Counter
+from pathlib import Path
 
 import anndata
 import numpy as np
@@ -20,35 +21,51 @@ import mushroom.utils as utils
 def get_fullres_size(adata):
     return visium.get_fullres_size(adata)
 
-def display_fovs(cosmx_dir):
-    fov_metadata_fp = list(utils.listfiles(cosmx_dir, regex=r'fov_positions_file.csv.gz$'))[0]
+def display_fovs(cosmx_dir, flatfiles_dir=None):
+    dirpath = cosmx_dir if flatfiles_dir is None else flatfiles_dir
+    dirpath = Path(dirpath)
+    assert dirpath.is_dir(), f'{dirpath} is not a directory'
+
+    fov_metadata_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*fov_positions_file.csv.gz$'))[0]
+    print(fov_metadata_fp)
     fov_metadata = pd.read_csv(fov_metadata_fp)
 
     sns.scatterplot(data=fov_metadata, x='X_mm', y='Y_mm')
     plt.gca().invert_yaxis()
     plt.axis('equal')
 
-def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sample_to_bbox=None, base=10):
+def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sample_to_bbox=None, base=10, flatfiles_dir=None, morphology_dir=None, version='v2'):
     if filepath.split('.')[-1] == 'h5ad':
         sample_to_adata = {'sample': sc.read_h5ad(filepath)}
     else:
         if sample_to_bbox is None:
             sample_to_bbox['sample'] = (0, 1000, 0, 1000) # just make arbitrarily large
-        fov_fps = sorted(utils.listfiles(filepath, regex=r'Morphology2D.*TIF$'))
-        fov_to_fp = {int(re.sub(r'^.*F0*([1-9]+[0-9]*).TIF$', r'\1', fp)):fp for fp in fov_fps}
+        
+        dirpath = flatfiles_dir if flatfiles_dir is not None else filepath
+        dirpath = Path(dirpath)
+        assert dirpath.is_dir(), f'flatfiles directory does not exist in {filepath}'
+        
+        metadata_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*metadata_file.csv.gz$'))[0]
+        exp_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*exprMat_file.csv.gz$'))[0]
+        fov_metadata_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*fov_positions_file.csv.gz$'))[0]
 
-        metadata_fp = list(utils.listfiles(filepath, regex=r'metadata_file.csv.gz$'))[0]
-        exp_fp = list(utils.listfiles(filepath, regex=r'exprMat_file.csv.gz$'))[0]
-        fov_metadata_fp = list(utils.listfiles(filepath, regex=r'fov_positions_file.csv.gz$'))[0]
+        morphology_dir = filepath if morphology_dir is None else morphology_dir
+        morphology_dir = Path(morphology_dir)
+        assert morphology_dir.is_dir(), f'morphology directory does not exist in {morphology_dir}'
+        
+        fov_fps = sorted(utils.listfiles(morphology_dir, regex=r'Morphology2D.*TIF$'))
+        fov_to_fp = {int(re.sub(r'^.*F0*([1-9]+[0-9]*).TIF$', r'\1', fp)):fp for fp in fov_fps}
 
         metadata = pd.read_csv(metadata_fp, index_col='cell')
         fov_metadata = pd.read_csv(fov_metadata_fp)
 
-        exp_df = pd.read_csv(exp_fp, index_col='cell')
-        to_remove = ['fov', 'cell_ID', 'Negative', 'SystemControl']
+        exp_df = pd.read_csv(exp_fp, index_col='cell_ID')
+        to_remove = ['fov', 'Negative', 'SystemControl']
         exp_df = exp_df[[c for c in exp_df.columns
                     if not len([x for x in to_remove if x in c])]]
-        exp_df = exp_df.loc[metadata.index.to_list()]
+        exp_df = exp_df[[c for c in exp_df.columns if c != 'cell']]
+
+        # exp_df = exp_df.loc[metadata.index.to_list()] # don't need this, they are already matching
 
         tf = tifffile.TiffFile(fov_fps[0])
         img_metadata = json.loads(next(iter(tf.pages)).description)
@@ -87,7 +104,11 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
                 f = metadata[metadata['fov']==fov]
 
                 tile = tifffile.imread(fov_to_fp[fov])
-                tile = np.flip(tile, axis=1) # for some reason images are inverted on y-axis in the tif
+
+                if version == 'v1':
+                    tile = np.flip(tile, axis=-2)
+                elif version == 'v2':
+                    tile = np.flip(tile, axis=-1)
 
 
                 r1, r2 = y * tile.shape[-2], (y + 1) * tile.shape[-2]
@@ -102,14 +123,21 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
 
                 ys = np.abs(f['CenterY_local_px'] - tile_size[-2])
                 for cell_id, x, y in zip(f.index.to_list(), f['CenterX_local_px'], ys):
-                    # cell_to_xy[cell_id] = ((x + c1) * scaler, (y + r1) * scaler)
-                    cell_to_xy[cell_id] = (x + c1, y + r1)
+                    if version == 'v1':
+                        cell_to_xy[cell_id] = (x + c1, y + r1)
+                    elif version == 'v2':
+                        cell_to_xy[cell_id] = (x - c1, y - r1)
+                    else:
+                        raise RuntimeError('version does not exist')
 
             resized = TF.resize(
                 torch.tensor(stitched),
                 (int(stitched.shape[-2] * scaler), int(stitched.shape[-1] * scaler)),
                 antialias=True
             ).numpy()
+
+            if version == 'v2':
+                resized = np.flip(resized, (-1, -2))
 
             img_dict = {'hires': resized[channel_idx]}
             img_dict.update({f'hires_{k}':v for k, v in zip(channels, resized)})
@@ -122,6 +150,10 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
                 np.asarray([cell_to_xy[cid][0] for cid in adata.obs.index.to_list()]),
                 np.asarray([cell_to_xy[cid][1] for cid in adata.obs.index.to_list()]),
             )).swapaxes(1, 0)
+            
+            if version == 'v2':
+                offset = np.asarray([stitched.shape[-1] - tile_size[-1], stitched.shape[-2] - tile_size[-2]])
+                adata.obsm['spatial'] += offset
 
             sfs = {'spot_diameter_fullres': 10.}
             sfs.update({f'tissue_{k}_scalef':scaler for k in img_dict})

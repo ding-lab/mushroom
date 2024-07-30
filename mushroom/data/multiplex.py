@@ -7,14 +7,16 @@ import torch
 import torch.nn as nn
 import torchvision.transforms.functional as TF
 import tifffile
-from einops import rearrange
+from einops import rearrange, repeat
 from ome_types import from_xml, model, to_xml
+from pydantic_extra_types.color import Color
 from skimage.exposure import rescale_intensity
 from tifffile import TiffFile
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, Normalize, RandomCrop, Compose
 
 import mushroom.utils as utils
+import mushroom.visualization.utils as vis_utils
 from mushroom.data.inference import InferenceTransform, InferenceSectionDataset
 from mushroom.data.utils import LearnerData
 
@@ -88,7 +90,7 @@ def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
     """
     assert data.shape[0] == len(channels), f'number of channels is {len(channels)}, must be same length as first dimension of data which is {data.shape}'
 
-    dtype_name = str(np.dtype(data.dype))
+    dtype_name = str(np.dtype(data.dtype))
     if 'int' in dtype_name:
         assert dtype_name in ['int8', 'int16', 'int32', 'uint8', 'uint16', 'uint32']
     elif 'float' in dtype_name:
@@ -108,6 +110,7 @@ def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
                 size_t=1,
                 size_x=data.shape[2],
                 size_y=data.shape[1],
+                size_z=1,
                 type=dtype_name,
                 big_endian=False,
                 channels=[model.Channel(id=f'Channel:{i}', name=c) for i, c in enumerate(channels)],
@@ -135,22 +138,8 @@ def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
         xml_str = to_xml(o)
         out_tif.overwrite_description(xml_str.encode())
 
-    with tifffile.TiffWriter(filepath, bigtiff=True) as tif:
-        metadata={
-            'axes': 'TCYXS',
-            'Channel': {'Name': channels},
-            'PhysicalSizeX': pix_per_micron,
-            'PhysicalSizeXUnit': 'µm',
-            'PhysicalSizeY': pix_per_micron,
-            'PhysicalSizeYUnit': 'µm',
-        }
-        tif.write(
-            rearrange(data, 'c h w -> 1 c h w 1'),
-            metadata=metadata,
-            compression='LZW',
-        )
 
-
+# depreciate this
 def make_pseudo(channel_to_img, cmap=None, contrast_pct=20., contrast_mapping=None):
     cmap = sns.color_palette('tab10') if cmap is None else cmap
 
@@ -179,6 +168,51 @@ def make_pseudo(channel_to_img, cmap=None, contrast_pct=20., contrast_mapping=No
     stack -= stack.min()
     stack /= stack.max()
     return stack
+
+def to_pseudocolor(data, colors=None, min_values=None, max_values=None, gammas=None):
+    """
+    data - (c, h, w)
+    """
+    if min_values is None:
+        min_values = np.zeros((data.shape[0],), dtype=data.dtype)
+    if max_values is None:
+        max_values = np.full((data.shape[0],), np.iinfo(np.uint8).max, dtype=data.dtype)
+
+    if colors is None:
+        n = data.shape[0]
+        colors = np.asarray(vis_utils.get_cmap(n)[:n]) * 255
+        colors = [tuple(c) for c in colors] 
+
+    rgbs = np.asarray([Color(c).as_rgb_tuple() for c in colors]) / 255.
+        
+    scaled = data / np.iinfo(data.dtype).max
+    
+    min_values = np.asarray(min_values) / np.iinfo(data.dtype).max
+    max_values = np.asarray(max_values) / np.iinfo(data.dtype).max
+    if gammas is not None:
+        gammas = np.asarray(gammas)
+        
+    for i, val in enumerate(min_values):
+        scaled[i][scaled[i] < val] = 0.
+    for i, val in enumerate(max_values):
+        scaled[i][scaled[i] > val] = val
+
+    scaled -= scaled.min((1, 2), keepdims=True)
+    scaled /= scaled.max((1, 2), keepdims=True)
+
+    # gamma
+    if gammas is not None:
+        scaled **= rearrange(gammas, 'n -> n 1 1')
+
+    scaled += 1e-16
+
+    stacked = repeat(scaled, 'c h w -> c 3 h w ') * rearrange(rgbs, 'c n -> c n 1 1')
+
+    rgb = rearrange(stacked.sum(0), 'c h w -> h w c')
+    rgb[rgb>1] = 1.
+    
+    return rgb
+        
 
 
 def get_common_channels(filepaths, channel_mapping=None):
