@@ -252,4 +252,3 @@ def read_mask(mask):
     if mask is not None:
         return mask > 0
     
-
