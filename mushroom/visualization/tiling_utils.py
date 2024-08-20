@@ -35,7 +35,7 @@ def get_tiled_sections(config, dtype='multiplex', channel_names=None, tiling_siz
     
     fps = [x['data'][0]['filepath'] for x in sections]
     
-    if dtype == 'multiplex':
+    if dtype == 'multiplex' or dtype == 'predicted_multiplex':
         channels = multiplex.get_common_channels(fps)
     elif dtype == 'xenium':
         channels = xenium.get_common_channels(fps)
@@ -52,7 +52,7 @@ def get_tiled_sections(config, dtype='multiplex', channel_names=None, tiling_siz
         channels = channel_names
     imgs = []
     for fp in fps:
-        if dtype == 'multiplex':
+        if dtype == 'multiplex' or dtype == 'predicted_multiplex':
             channel_to_img = multiplex.extract_ome_tiff(fp, channels=channels, as_dict=True)
             img = np.stack([channel_to_img[c] for c in channels])
         elif dtype == 'xenium':
