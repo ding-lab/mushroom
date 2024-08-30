@@ -83,12 +83,12 @@ def get_size(filepath):
     im = ome.images[0]
     return (im.pixels.size_c, im.pixels.size_y, im.pixels.size_x)
 
-
-def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
-    """
-    data - (n_channels, height, width)
-    """
-    assert data.shape[0] == len(channels), f'number of channels is {len(channels)}, must be same length as first dimension of data which is {data.shape}'
+def create_ome_model(data, channels, resolution, resolution_unit):
+    if len(data.shape) == 3:
+        c, h, w = data.shape
+        t, z = 1, 1
+    else:
+        t, z, c, h, w = data.shape
 
     dtype_name = str(np.dtype(data.dtype))
     if 'int' in dtype_name:
@@ -99,40 +99,56 @@ def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
         dtype_name = 'bit'
     else:
         raise ValueError(f'dtype {data.dtype} was unable to be saved as ome')
-
+    
     o = model.OME()
     o.images.append(
         model.Image(
             id='Image:0',
             pixels=model.Pixels(
                 dimension_order='XYCZT',
-                size_c=len(channels),
-                size_t=1,
-                size_x=data.shape[2],
-                size_y=data.shape[1],
-                size_z=1,
+                size_c=c,
+                size_t=t,
+                size_z=z,
+                size_x=w,
+                size_y=h,
                 type=dtype_name,
                 big_endian=False,
-                channels=[model.Channel(id=f'Channel:{i}', name=c) for i, c in enumerate(channels)],
-                physical_size_x=microns_per_pixel,
-                physical_size_y=microns_per_pixel,
-                physical_size_x_unit='µm',
-                physical_size_y_unit='µm'
+                channels=[model.Channel(id=f'Channel:{i}', name=x, samples_per_pixel=1)
+                          for i, x in enumerate(channels)],
+                physical_size_x=resolution,
+                physical_size_y=resolution,
+                physical_size_x_unit=resolution_unit,
+                physical_size_y_unit=resolution_unit,
             )
         )
     )
 
     im = o.images[0]
-    for i in range(len(im.pixels.channels)):
-        im.pixels.planes.append(model.Plane(the_c=i, the_t=0, the_z=0))
+    for c_idx in range(c):
+        for t_idx in range(t):
+            for z_idx in range(z):
+                im.pixels.planes.append(model.Plane(the_c=c_idx, the_t=t_idx, the_z=z_idx))
     im.pixels.tiff_data_blocks.append(model.TiffData(plane_count=len(im.pixels.planes)))
+
+    return o
+
+
+def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
+    """
+    data - (n_channels, height, width) or (timepoint, depth, n_channels, height, width)
+    """
+    assert data.shape[-3] == len(channels), f'number of channels is {len(channels)}, must be same length as first dimension of data which is {data.shape}'
+
+    o = create_ome_model(data, channels, microns_per_pixel, 'µm')
+
+    pattern = 'c y x -> 1 1 c y x' if len(data.shape) == 3 else '... -> ...'
 
     with tifffile.TiffWriter(filepath, ome=True, bigtiff=True) as out_tif:
         opts = {
             'compression': 'LZW',
         }
         out_tif.write(
-            rearrange(data, 'c y x -> 1 1 c y x'),
+            rearrange(data, pattern),
             **opts
         )
         xml_str = to_xml(o)
