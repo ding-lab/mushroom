@@ -116,6 +116,25 @@ def warp_pts(pts, ddf, radius=1):
 
     return warped, mask
 
+def warp_pts_fast(pts, ddf, upscale_factor=None):
+    """pts - (y, x)"""
+    if isinstance(pts, torch.Tensor):
+        pts = pts.numpy()
+    if isinstance(ddf, torch.Tensor):
+        ddf = ddf.numpy()
+
+    def transform(x):
+        try:
+            return x + ddf[:, int(x[0] * upscale_factor), int(x[1] * upscale_factor)]
+        except IndexError:
+            return np.asarray([np.nan, np.nan])
+    
+    if upscale_factor is not None:
+        ddf = utils.rescale(ddf, scale=upscale_factor, dim_order='c h w', target_dtype=ddf.dtype)
+    warped = np.apply_along_axis(transform, 1, pts)
+    mask = ~np.isnan(warped[:, 0])
+    return warped[mask], mask
+
 # def register_visium(adata, ddf, target_pix_per_micron=1., moving_pix_per_micron=None):
 def register_visium(to_transform, ddf, resolution=None):
     adata = to_transform.copy()
