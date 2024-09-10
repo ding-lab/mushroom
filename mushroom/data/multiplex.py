@@ -35,7 +35,17 @@ def extract_ome_tiff(filepath, channels=None, as_dict=True, flexibility='strict'
     d = {}
     img_channels, imgs = [], []
 
-    for c, p in zip(im.pixels.channels, tif.pages):
+    # check if we are in pages or series
+    if len(tif.pages) == len(im.pixels.channels):
+        pages = tif.pages
+    elif len(tif.series[0].pages) == len(im.pixels.channels):
+        pages = tif.series[0].pages
+    else:
+        pages = []
+    
+    assert len(pages) == len(im.pixels.channels), f'Number of pages <{len(pages)}> does not match number of channels <{len(im.pixels.channels)}>' 
+
+    for c, p in zip(im.pixels.channels, pages):
         if channels is None or c.name in channels:
             img = p.asarray()
 
@@ -82,6 +92,50 @@ def get_size(filepath):
     ome = from_xml(tif.ome_metadata)
     im = ome.images[0]
     return (im.pixels.size_c, im.pixels.size_y, im.pixels.size_x)
+
+def write_pyramidal_ome(output_fp, data, ome_model, subresolutions=4):
+    """
+    data - (c h w)
+    """
+    import gc
+    with tifffile.TiffWriter(output_fp, ome=True, bigtiff=True) as out_tif:
+        opts = {
+            'compression': 'LZW',
+        }
+        out_tif.write(
+            rearrange(data, 'c y x -> 1 c y x 1'),
+            subifds=subresolutions,
+            **opts
+        )
+        gc.collect()
+        for level in range(subresolutions):
+            mag = 2**(level + 1)
+            logging.info(f'writting subres {mag}')
+            x = utils.rescale(data, scale=1 / mag, dim_order='c h w', target_dtype=data.dtype)
+            # x = rearrange(torch.tensor(data[..., 0, 0]), 'w h c -> c h w')
+            # shape = (int(x.shape[-2] / mag), int(x.shape[-1] / mag))
+            # sampled = rearrange(
+            #     TF.resize(x, shape, antialias=True),
+            #     'c h w -> w h c 1 1'
+            # )
+            logging.info(f'subresolution shape: {x.shape[-2:]}')
+            out_tif.write(
+                rearrange(x, 'c y x -> 1 c y x 1'),
+                subfiletype=1,
+                **opts
+            )
+            # del(x)
+            # gc.collect()
+            # out_tif.write(
+            #     rearrange(sampled.numpy().astype(np.uint8), 'x y c z t -> t c y x z'),
+            #     subfiletype=1,
+            #     **opts
+            # )
+            del(x)
+            gc.collect()
+        xml_str = to_xml(ome_model)
+        out_tif.overwrite_description(xml_str.encode())
+
 
 def create_ome_model(data, channels, resolution, resolution_unit):
     if len(data.shape) == 3:
@@ -143,16 +197,19 @@ def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
 
     pattern = 'c y x -> 1 1 c y x' if len(data.shape) == 3 else '... -> ...'
 
-    with tifffile.TiffWriter(filepath, ome=True, bigtiff=True) as out_tif:
-        opts = {
-            'compression': 'LZW',
-        }
-        out_tif.write(
-            rearrange(data, pattern),
-            **opts
-        )
-        xml_str = to_xml(o)
-        out_tif.overwrite_description(xml_str.encode())
+    if len(data.shape) == 5: # cant do pyramidal for 5 dims
+        with tifffile.TiffWriter(filepath, ome=True, bigtiff=True) as out_tif:
+            opts = {
+                'compression': 'LZW',
+            }
+            out_tif.write(
+                rearrange(data, pattern),
+                **opts
+            )
+            xml_str = to_xml(o)
+            out_tif.overwrite_description(xml_str.encode())
+    else:
+        write_pyramidal_ome(filepath, data, o, subresolutions=4)
 
 
 # depreciate this

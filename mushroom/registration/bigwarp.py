@@ -45,7 +45,7 @@ def warp_image(moving, ddf, fill_type='min'):
         torch.arange(ddf.shape[-1]),
         indexing='ij',
     )
-    
+
     h_idxs = torch.round(ref_grid_h + ddf[-2])
     w_idxs = torch.round(ref_grid_w + ddf[-1])
 
@@ -57,7 +57,7 @@ def warp_image(moving, ddf, fill_type='min'):
     h_idxs = torch.round(ref_grid_h + masked_ddf[-2]).to(torch.long)
     w_idxs = torch.round(ref_grid_w + masked_ddf[-1]).to(torch.long)
 
-    h_idxs[h_idxs>= moving.shape[-2]] = 0
+    h_idxs[h_idxs>= moving.shape[-2]] = 0 
     w_idxs[w_idxs>= moving.shape[-1]] = 0
 
     warped = moving[..., h_idxs, w_idxs]
@@ -77,6 +77,8 @@ def is_valid(pt, size):
 
 def warp_pts(pts, ddf, radius=1):
     """
+    DEPRECIATED: use warp_pts_fast
+
     assumes 2d transform
     
     pts - (n, 2) # 2 is height, width
@@ -116,24 +118,56 @@ def warp_pts(pts, ddf, radius=1):
 
     return warped, mask
 
-def warp_pts_fast(pts, ddf, upscale_factor=None):
+def warp_pts_fast(pts, ddf, upscale_factor=1., bin_res=5000):
     """pts - (y, x)"""
+    is_torch = False
     if isinstance(pts, torch.Tensor):
         pts = pts.numpy()
+        is_torch = True
     if isinstance(ddf, torch.Tensor):
         ddf = ddf.numpy()
-
-    def transform(x):
-        try:
-            return x + ddf[:, int(x[0] * upscale_factor), int(x[1] * upscale_factor)]
-        except IndexError:
-            return np.asarray([np.nan, np.nan])
     
-    if upscale_factor is not None:
-        ddf = utils.rescale(ddf, scale=upscale_factor, dim_order='c h w', target_dtype=ddf.dtype)
-    warped = np.apply_along_axis(transform, 1, pts)
-    mask = ~np.isnan(warped[:, 0])
-    return warped[mask], mask
+    ref_grid_h, ref_grid_w = np.meshgrid(
+        np.arange(ddf.shape[-2]),
+        np.arange(ddf.shape[-1]),
+        indexing='ij',
+    )
+
+    h_idxs = ref_grid_h + ddf[-2]
+    w_idxs = ref_grid_w + ddf[-1]
+
+    h_idxs = utils.rescale(h_idxs, scale=upscale_factor, dim_order='h w', target_dtype=h_idxs.dtype)
+    w_idxs = utils.rescale(w_idxs, scale=upscale_factor, dim_order='h w', target_dtype=h_idxs.dtype)
+    
+    h_min, h_max = h_idxs.min(), h_idxs.max()
+    w_min, w_max = w_idxs.min(), w_idxs.max()
+
+    h_bins = np.linspace(h_min, h_max, bin_res)
+    w_bins = np.linspace(w_min, w_max, bin_res)
+
+    h_binned = np.digitize(h_idxs, bins=h_bins) - 1
+    w_binned = np.digitize(w_idxs, bins=w_bins) - 1
+
+    meshes = np.stack(np.meshgrid(np.arange(h_binned.shape[0]), np.arange(h_binned.shape[1]), indexing='ij'))
+    mapping = np.full((2, bin_res, bin_res), -1, dtype=int)
+    mapping[:, h_binned.flatten(), w_binned.flatten()] = meshes[0].flatten(), meshes[1].flatten()
+
+    y_coord_binned = np.digitize(pts[:, 0], bins=h_bins) - 1
+    x_coord_binned = np.digitize(pts[:, 1], bins=w_bins) - 1
+
+    warped = mapping[:, y_coord_binned, x_coord_binned]
+    exclude = np.sum(warped==-1, axis=0) > 0
+    exclude |= np.sum(warped==bin_res - 1, axis=0) > 0
+    np.count_nonzero(exclude)
+
+    warped = warped[:, ~exclude]
+    warped = warped / upscale_factor
+
+    if is_torch:
+        warped = torch.tensor(warped)
+        exclude = torch.tensor(exclude)
+
+    return warped.T, ~exclude
 
 # def register_visium(adata, ddf, target_pix_per_micron=1., moving_pix_per_micron=None):
 def register_visium(to_transform, ddf, resolution=None):
@@ -170,7 +204,7 @@ def register_visium(to_transform, ddf, resolution=None):
     # x = (torch.tensor(new.obsm['spatial']) * scale).to(torch.long)
     x = torch.tensor(adata.obsm['spatial']).to(torch.long)
     x = x[:, [1, 0]] # needs to be (h, w) instead of (w, h)
-    transformed, mask = warp_pts(x, ddf)
+    transformed, mask = warp_pts_fast(x, ddf)
     adata = adata[mask.numpy()]
     adata.obsm['spatial'] = transformed[:, [1, 0]].numpy()
 
@@ -189,9 +223,9 @@ def register_xenium(adata, ddf, resolution=None, radius=1, coordinate_sf=None):
     x = new.obsm['spatial'][:, [1, 0]]
     if coordinate_sf is not None:
         x *= coordinate_sf
-    transformed, mask = warp_pts(x, ddf, radius=radius)
-    new = new[mask.numpy()]
-    new.obsm['spatial'] = transformed[:, [1, 0]].numpy()
+    transformed, mask = warp_pts_fast(x, ddf)
+    new = new[mask]
+    new.obsm['spatial'] = transformed[:, [1, 0]]
 
 
     d = next(iter(new.uns['spatial'].values()))
@@ -281,6 +315,8 @@ def display_data_map(data_map, multiplex_channel='DAPI', vis_scale=.1, gamma=1.,
                 ax.imshow(img)
             elif parsed_dtype == 'he':
                 img = he.read_he(filepath, scale=vis_scale)
+                if img.shape[0] == 3:
+                    img = rearrange(img, 'c h w -> h w c')
                 ax.imshow(img)
             ax.set_title(dtype)
             if j == 0:

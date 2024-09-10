@@ -40,7 +40,7 @@ def get_size(filepath):
 
 def read_he(filepath, scale=None):
     ext = filepath.split('.')[-1]
-    if ext in ['tif', 'svs']:
+    if ext in ['tif', 'svs', 'tiff']:
         img = tifffile.imread(filepath)
     else:
         logging.warning(f'File extension {ext} is not .tif or .svs, attempting to open but may cause errors')
@@ -71,7 +71,9 @@ def get_section_to_image(sid_to_filepaths, scale=.1):
     for sid, filepath in sid_to_filepaths.items():
         logging.info(f'generating image data for section {sid}')
         img = read_he(filepath)
-        img = torch.tensor(rearrange(img, 'h w c -> c h w'))
+        img = torch.tensor(img)
+        if img.shape[-1] == 3:
+            img = rearrange(img, 'h w c -> c h w')
         img = TF.resize(img, (int(scale * img.shape[-2]), int(scale * img.shape[-1])), antialias=True).to(torch.float32)
         img /= img.max()
         img = img.to(torch.float32)
