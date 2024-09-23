@@ -1,4 +1,6 @@
 
+import os
+
 import pandas as pd
 import numpy as np
 
@@ -11,23 +13,44 @@ import mushroom.utils as utils
 
 from einops import rearrange
 
-def tile_xenium(adata, target_size=None, tile_size=20):
+def tile_xenium(adata, target_size=None, tile_size=20, transcripts=None):
     if target_size is None:
         target_size = xenium.get_fullres_size(adata)
     
-    adata.obs['grid_name'] = [f'{x // tile_size}_{y // tile_size}' for x, y in adata.obsm['spatial']]
-    df = pd.DataFrame(data=adata.X, columns=adata.var.index.to_list(), index=adata.obs.index.to_list())
-    df['grid_name'] = adata.obs['grid_name'].to_list()
-    df = df.groupby('grid_name').sum()
-    
+    if transcripts is None:
+        adata.obs['grid_name'] = [f'{x // tile_size}_{y // tile_size}'
+                                  for x, y in adata.obsm['spatial'].astype(int)]
+        df = pd.DataFrame(
+            data=adata.X,
+            columns=adata.var.index.to_list(),
+            index=adata.obs.index.to_list()
+        )
+        df['grid_name'] = adata.obs['grid_name'].to_list()
+        df = df.groupby('grid_name').sum()    
+    else:
+        transcripts['grid_name'] = [
+            f'{x // tile_size}_{y // tile_size}'
+            for x, y in transcripts[['x_location', 'y_location']].values.astype(int)]
+
+        df = transcripts[['feature_name', 'grid_name', 'transcript_id']].groupby(['feature_name', 'grid_name']).count()
+        df = df.reset_index()
+        df = df.pivot_table(index=['grid_name'], columns=['feature_name'])
+        df = df.replace(np.nan, 0)
+        df.columns = [c for _, c in list(df.columns)]
+        df = df[[c for c in df.columns if 'Codeword' not in c and 'NegControl' not in c]] # get rid of weird feature names
+
     img = np.zeros((target_size[0] // tile_size + 1, target_size[1] // tile_size + 1, df.shape[1]))
     for name, row in df.iterrows():
         x, y = [int(x) for x in name.split('_')]
         img[y, x] = row.values
-    return img
+
+    if transcripts is None:
+        return img
+    else:
+        return img, list(df.columns)
 
 
-def get_tiled_sections(config, dtype='multiplex', channel_names=None, tiling_size=20, drop=None, target_size=None):
+def get_tiled_sections(config, dtype='multiplex', channel_names=None, tiling_size=20, drop=None, target_size=None, use_transcripts=False):
     sections = [x for x in config['sections'] if x['data'][0]['dtype']==dtype]
     
     if drop is not None:
@@ -52,14 +75,23 @@ def get_tiled_sections(config, dtype='multiplex', channel_names=None, tiling_siz
         channels = channel_names
     imgs = []
     for fp in fps:
+        print(fp)
         if dtype == 'multiplex' or dtype == 'predicted_multiplex':
             channel_to_img = multiplex.extract_ome_tiff(fp, channels=channels, as_dict=True)
             img = np.stack([channel_to_img[c] for c in channels])
         elif dtype == 'xenium':
-            adata = xenium.adata_from_xenium(fp, normalize=True)
-            adata = adata[:, channels]
-#             img = xenium.to_multiplex(adata, tiling_size=tiling_size, method='grid')
-            img = tile_xenium(adata, tile_size=tiling_size)
+            if not use_transcripts:
+                adata = xenium.adata_from_xenium(fp, normalize=True)
+                adata = adata[:, channels]
+                img = tile_xenium(adata, tile_size=tiling_size)
+            else:
+                adata = xenium.adata_from_xenium(fp)
+                transcripts_fp = fp.replace('.h5ad', '_transcripts.parquet')
+                assert os.path.exists(transcripts_fp)
+                transcripts = pd.read_parquet(transcripts_fp)
+                img, tiled_channels = tile_xenium(adata, tile_size=tiling_size, transcripts=transcripts)
+                img = img[..., [tiled_channels.index(c) for c in channels]]
+
             img = rearrange(img, 'h w c -> c h w')
         elif dtype == 'visium':
             adata = visium.adata_from_visium(fp, normalize=True)
@@ -69,7 +101,6 @@ def get_tiled_sections(config, dtype='multiplex', channel_names=None, tiling_siz
         elif dtype == 'cosmx':
             adata = cosmx.adata_from_cosmx(fp, normalize=True)
             adata = adata[:, channels]
-#             img = xenium.to_multiplex(adata, tiling_size=tiling_size, method='grid')
             img = tile_xenium(adata, tile_size=tiling_size)
             img = rearrange(img, 'h w c -> c h w')
 
