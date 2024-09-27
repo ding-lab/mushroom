@@ -34,7 +34,7 @@ def display_fovs(cosmx_dir, flatfiles_dir=None):
     plt.gca().invert_yaxis()
     plt.axis('equal')
 
-def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sample_to_bbox=None, base=10, flatfiles_dir=None, morphology_dir=None, version='v2'):
+def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sample_to_bbox=None, base=10, flatfiles_dir=None, morphology_dir=None, version='v1'):
     if filepath.split('.')[-1] == 'h5ad':
         sample_to_adata = {'sample': sc.read_h5ad(filepath)}
     else:
@@ -48,6 +48,8 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
         metadata_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*metadata_file.csv.gz$'))[0]
         exp_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*exprMat_file.csv.gz$'))[0]
         fov_metadata_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*fov_positions_file.csv.gz$'))[0]
+        transcripts_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*tx_file.csv.gz$'))[0]
+        assert os.path.exists(transcripts_fp), f'transcripts filepath does not exist {transcripts_fp}'
 
         morphology_dir = filepath if morphology_dir is None else morphology_dir
         morphology_dir = Path(morphology_dir)
@@ -65,12 +67,12 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
                     if not len([x for x in to_remove if x in c])]]
         exp_df = exp_df[[c for c in exp_df.columns if c != 'cell']]
 
-        # exp_df = exp_df.loc[metadata.index.to_list()] # don't need this, they are already matching
+        transcripts_df = pd.read_csv(transcripts_fp, sep=',')
 
         tf = tifffile.TiffFile(fov_fps[0])
         img_metadata = json.loads(next(iter(tf.pages)).description)
 
-        img_ppm = img_metadata['PixelSize_um']
+        img_ppm = 1 / img_metadata['PixelSize_um'] # is pixels per micron, we want microns per pixel
         channel_ids = img_metadata['ChannelOrder']
         channel_id_to_name = {d['Fluorophore']['ChannelId']:d['BiologicalTarget']
                             for d in img_metadata['MorphologyKit']['MorphologyReagents']}
@@ -80,7 +82,7 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
 
         tile_size = (len(channel_ids), img_metadata['ImRows'], img_metadata['ImCols'])
         
-        sample_to_adata = {}
+        sample_to_adata, sample_to_stitched, sample_to_transcripts = {}, {}, {}
         for sample, (r1, r2, c1, c2) in sample_to_bbox.items():
             logging.info(f'extracting {sample}, bbox is {(r1, r2, c1, c2)}')
             fov_mask = (
@@ -99,9 +101,12 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
 
             stitched = np.zeros((tile_size[0], tile_size[1] * len(y_vals), tile_size[2] * len(x_vals)), dtype=np.uint8)
             cell_to_xy = {}
+            new_transcripts = None
             for fov, (y, x) in fov_to_pos.items():
+                print(f'reading fov {fov}')
                 logging.info(f'reading fov {fov}')
                 f = metadata[metadata['fov']==fov]
+                transcripts_f = transcripts_df[transcripts_df['fov'] == fov]
 
                 tile = tifffile.imread(fov_to_fp[fov])
 
@@ -121,6 +126,9 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
 
                 stitched[:, r1:r2, c1:c2] = tile
 
+                transcripts_f['x_local_px'] = transcripts_f['x_local_px'] + c1
+                transcripts_f['y_local_px'] = np.abs(transcripts_f['y_local_px'] - tile_size[-2]) + r1
+
                 ys = np.abs(f['CenterY_local_px'] - tile_size[-2])
                 for cell_id, x, y in zip(f.index.to_list(), f['CenterX_local_px'], ys):
                     if version == 'v1':
@@ -129,6 +137,11 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
                         cell_to_xy[cell_id] = (x - c1, y - r1)
                     else:
                         raise RuntimeError('version does not exist')
+                
+                if new_transcripts is None:
+                    new_transcripts = transcripts_f
+                else:
+                    new_transcripts = pd.concat((new_transcripts, transcripts_f))
 
             resized = TF.resize(
                 torch.tensor(stitched),
@@ -154,6 +167,8 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
             if version == 'v2':
                 offset = np.asarray([stitched.shape[-1] - tile_size[-1], stitched.shape[-2] - tile_size[-2]])
                 adata.obsm['spatial'] += offset
+                new_transcripts['x_local_px'] += offset[0]
+                new_transcripts['y_local_px'] += offset[1]
 
             sfs = {'spot_diameter_fullres': 10.}
             sfs.update({f'tissue_{k}_scalef':scaler for k in img_dict})
@@ -168,6 +183,9 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
             adata.uns['ppm'] = img_ppm
         
             sample_to_adata[sample] = adata
+            sample_to_stitched[sample] = stitched
+            sample_to_transcripts[sample] = new_transcripts
+
     
     for sid, adata in sample_to_adata.items():
         # if sparse, then convert
@@ -179,9 +197,9 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
 
         sample_to_adata[sid] = adata
     
-    if len(sample_to_adata) <= 1:
-        return next(iter(sample_to_adata.values()))
-    return sample_to_adata
+    # if len(sample_to_adata) <= 1:
+    #     return next(iter(sample_to_adata.values()))
+    return sample_to_adata, sample_to_stitched, channels, sample_to_transcripts
 
 
 def get_common_channels(filepaths, channel_mapping=None):
