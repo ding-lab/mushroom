@@ -36,7 +36,8 @@ def display_fovs(cosmx_dir, flatfiles_dir=None):
 
 def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sample_to_bbox=None, base=10, flatfiles_dir=None, morphology_dir=None, version='v1'):
     if filepath.split('.')[-1] == 'h5ad':
-        sample_to_adata = {'sample': sc.read_h5ad(filepath)}
+        # sample_to_adata = {'sample': sc.read_h5ad(filepath)}
+        return sc.read_h5ad(filepath)
     else:
         if sample_to_bbox is None:
             sample_to_bbox['sample'] = (0, 1000, 0, 1000) # just make arbitrarily large

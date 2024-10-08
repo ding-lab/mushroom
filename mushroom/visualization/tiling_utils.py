@@ -3,6 +3,7 @@ import os
 
 import pandas as pd
 import numpy as np
+import scanpy as sc
 
 import mushroom.data.multiplex as multiplex
 import mushroom.data.xenium as xenium
@@ -66,6 +67,8 @@ def get_tiled_sections(config, dtype='multiplex', channel_names=None, tiling_siz
         channels = visium.get_common_channels(fps)
     elif dtype == 'cosmx':
         channels = cosmx.get_common_channels(fps)
+    elif 'he' in dtype:
+        channels = ['red', 'green', 'blue']
     else:
         raise ValueError(f'{dtype} is not valid dtype')
         
@@ -91,7 +94,6 @@ def get_tiled_sections(config, dtype='multiplex', channel_names=None, tiling_siz
                 transcripts = pd.read_parquet(transcripts_fp)
                 img, tiled_channels = tile_xenium(adata, tile_size=tiling_size, transcripts=transcripts)
                 img = img[..., [tiled_channels.index(c) for c in channels]]
-
             img = rearrange(img, 'h w c -> c h w')
         elif dtype == 'visium':
             adata = visium.adata_from_visium(fp, normalize=True)
@@ -99,10 +101,25 @@ def get_tiled_sections(config, dtype='multiplex', channel_names=None, tiling_siz
             img = visium.to_multiplex(adata, tiling_size=tiling_size, method='radius')
             img = rearrange(img, 'h w c -> c h w')
         elif dtype == 'cosmx':
-            adata = cosmx.adata_from_cosmx(fp, normalize=True)
-            adata = adata[:, channels]
-            img = tile_xenium(adata, tile_size=tiling_size)
+            if not use_transcripts:
+                adata = cosmx.adata_from_cosmx(fp, normalize=True)
+                adata = adata[:, channels]
+                img = tile_xenium(adata, tile_size=tiling_size)
+            else:
+                adata = cosmx.adata_from_cosmx(fp, normalize=True)
+                transcripts_fp = fp.replace('.h5ad', '_transcripts.parquet')
+                assert os.path.exists(transcripts_fp)
+                transcripts = pd.read_parquet(transcripts_fp)
+                if 'transcript_id' not in transcripts.columns:
+                    transcripts['transcript_id'] = np.arange(transcripts.shape[0])
+                img, tiled_channels = tile_xenium(adata, tile_size=tiling_size, transcripts=transcripts)
+                img = img[..., [tiled_channels.index(c) for c in channels]]
             img = rearrange(img, 'h w c -> c h w')
+        elif 'he' in dtype:
+            channel_to_img = multiplex.extract_ome_tiff(fp, channels=channels, as_dict=True)
+            img = np.stack([channel_to_img[c] for c in channels])
+        else:
+            raise ValueError(f'{dtype} is not valid dtype')
 
         if target_size is not None and img.shape[-2:] != target_size:
             img = utils.rescale(img, size=target_size, target_dtype=img.dtype, dim_order='c h w')
