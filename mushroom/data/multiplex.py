@@ -187,7 +187,7 @@ def create_ome_model(data, channels, resolution, resolution_unit):
     return o
 
 
-def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
+def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1., subresolutions=4):
     """
     data - (n_channels, height, width) or (timepoint, depth, n_channels, height, width)
     """
@@ -197,7 +197,7 @@ def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
 
     pattern = 'c y x -> 1 1 c y x' if len(data.shape) == 3 else '... -> ...'
 
-    if len(data.shape) == 5: # cant do pyramidal for 5 dims
+    if len(data.shape) == 5 or subresolutions is None or subresolutions < 2: # cant do pyramidal for 5 dims
         with tifffile.TiffWriter(filepath, ome=True, bigtiff=True) as out_tif:
             opts = {
                 'compression': 'LZW',
@@ -209,8 +209,8 @@ def write_basic_ome_tiff(filepath, data, channels, microns_per_pixel=1.):
             xml_str = to_xml(o)
             out_tif.overwrite_description(xml_str.encode())
     else:
-        write_pyramidal_ome(filepath, data, o, subresolutions=4)
-
+        write_pyramidal_ome(filepath, data, o, subresolutions=subresolutions)
+ 
 
 # depreciate this
 def make_pseudo(channel_to_img, cmap=None, contrast_pct=20., contrast_mapping=None):
