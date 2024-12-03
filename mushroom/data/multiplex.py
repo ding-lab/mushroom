@@ -98,7 +98,7 @@ def write_pyramidal_ome(output_fp, data, ome_model, subresolutions=4):
     data - (c h w)
     """
     import gc
-    with tifffile.TiffWriter(output_fp, ome=True, bigtiff=True) as out_tif:
+    with tifffile.TiffWriter(output_fp, bigtiff=True) as out_tif:
         opts = {
             'compression': 'LZW',
         }
@@ -112,25 +112,13 @@ def write_pyramidal_ome(output_fp, data, ome_model, subresolutions=4):
             mag = 2**(level + 1)
             logging.info(f'writting subres {mag}')
             x = utils.rescale(data, scale=1 / mag, dim_order='c h w', target_dtype=data.dtype)
-            # x = rearrange(torch.tensor(data[..., 0, 0]), 'w h c -> c h w')
-            # shape = (int(x.shape[-2] / mag), int(x.shape[-1] / mag))
-            # sampled = rearrange(
-            #     TF.resize(x, shape, antialias=True),
-            #     'c h w -> w h c 1 1'
-            # )
+
             logging.info(f'subresolution shape: {x.shape[-2:]}')
             out_tif.write(
                 rearrange(x, 'c y x -> 1 c y x 1'),
                 subfiletype=1,
                 **opts
             )
-            # del(x)
-            # gc.collect()
-            # out_tif.write(
-            #     rearrange(sampled.numpy().astype(np.uint8), 'x y c z t -> t c y x z'),
-            #     subfiletype=1,
-            #     **opts
-            # )
             del(x)
             gc.collect()
         xml_str = to_xml(ome_model)
