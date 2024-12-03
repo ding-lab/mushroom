@@ -21,6 +21,14 @@ import mushroom.utils as utils
 def get_fullres_size(adata):
     return visium.get_fullres_size(adata)
 
+def adjust_metadata_col_names(cols):
+    """
+    Adjusts column names because they change in 6k vs 1k
+    """
+    cols = [x.replace('_global', '') for x in cols]
+    cols = [x[0].upper() + x[1:] for x in cols]
+    return cols
+
 def display_fovs(cosmx_dir, flatfiles_dir=None):
     dirpath = cosmx_dir if flatfiles_dir is None else flatfiles_dir
     dirpath = Path(dirpath)
@@ -29,7 +37,6 @@ def display_fovs(cosmx_dir, flatfiles_dir=None):
     fov_metadata_fp = list(utils.listfiles(dirpath, regex=r'\/[^\.][^\/]*fov_positions_file.csv.gz$'))[0]
     print(fov_metadata_fp)
     fov_metadata = pd.read_csv(fov_metadata_fp)
-
     sns.scatterplot(data=fov_metadata, x='X_mm', y='Y_mm')
     plt.gca().invert_yaxis()
     plt.axis('equal')
@@ -61,6 +68,7 @@ def adata_from_cosmx(filepath, img_channel='DNA', scaler=.1, normalize=False, sa
 
         metadata = pd.read_csv(metadata_fp, index_col='cell')
         fov_metadata = pd.read_csv(fov_metadata_fp)
+        fov_metadata.columns = adjust_metadata_col_names(fov_metadata.columns)
 
         exp_df = pd.read_csv(exp_fp, index_col='cell_ID')
         to_remove = ['fov', 'Negative', 'SystemControl']
