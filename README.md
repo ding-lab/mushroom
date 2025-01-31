@@ -27,6 +27,12 @@ API subject to change...
 
 Location of materials for **3D Imaging and Multimodal Spatial Characterization of the Precancer-to-Cancer Transition in Breast and Prostate**
 
-[H&E model training](https://github.com/ding-lab/mushroom/blob/subclone-resubmission/notebooks/manuscript/submission_v1/step3_train_mushroom_cancer_v2.ipynb)
+[H&E protein prediction model training](https://github.com/ding-lab/mushroom/blob/main/notebooks/manuscript/submission_v1/he_channel_prediction.ipynb)
 
-[Neighborhood analysis](https://github.com/ding-lab/mushroom/blob/subclone-resubmission/notebooks/projects/subclone_paper/step7_figure6_revisions_v2.ipynb)
+[Serial section registration workflow](https://github.com/ding-lab/mushroom/blob/main/notebooks/manuscript/submission_v2/step1_register_datasets.ipynb)
+
+[3D ROI data generation and quantification](https://github.com/ding-lab/mushroom/blob/main/notebooks/manuscript/submission_v2/step2_roi_data_gen.ipynb)
+
+[Automated 2D epithelial region detection and quantification](https://github.com/ding-lab/mushroom/blob/main/notebooks/manuscript/submission_v2/step5_region_characterization.ipynb)
+
+[DEG plotting and analyses](https://github.com/ding-lab/mushroom/blob/main/notebooks/manuscript/submission_v2/step6_deg_analysis.ipynb)
