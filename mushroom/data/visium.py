@@ -14,6 +14,7 @@ from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, Ran
 
 from mushroom.data.utils import LearnerData
 from mushroom.data.inference import InferenceSectionDataset
+import mushroom.utils as utils
 
 
 def pixels_per_micron(adata):
@@ -152,6 +153,24 @@ def to_multiplex(adata, tiling_size=64, method='radius', radius_sf=1.):
         raise RuntimeError(f'method was {method}, can only be "grid" or "radius"')
 
     return img
+
+def scale_adata(adata, scale):
+    # scalefactors = next(iter(adata.uns['spatial'].values()))['scalefactors']
+    # scalefactors['tissue_hires_scalef'] *= scale
+
+    adata.uns['ppm'] /= scale
+
+    adata.obsm['spatial'] = adata.obsm['spatial'] * scale
+
+    d = next(iter(adata.uns['spatial'].values()))['images']
+    d['hires'] = utils.rescale(
+        d['hires'],
+        scale=scale,
+        dim_order='h w c',
+        target_dtype=d['hires'].dtype
+    )
+
+    return adata
 
 
 def get_section_to_image(
