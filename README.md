@@ -38,3 +38,11 @@ Location of materials for **3D Imaging and Multimodal Spatial Characterization o
 [DEG plotting and analyses](https://github.com/ding-lab/mushroom/blob/main/notebooks/manuscript/submission_v2/step6_deg_analysis.ipynb)
 
 [Automated region connectivity for HT704B1](https://github.com/ding-lab/mushroom/blob/main/notebooks/manuscript/submission_v1/analyses_brca_v3.ipynb)
+
+## Previous versions
+
+Location of materials for **Tumour evolution and microenvironment interactions in 2D and 3D space**
+
+[Neighborhood model training](https://github.com/ding-lab/mushroom/blob/subclone-resubmission/notebooks/manuscript/submission_v1/step3_train_mushroom_cancer_v2.ipynb)
+
+[Analysis](https://github.com/ding-lab/mushroom/blob/subclone-resubmission/notebooks/projects/subclone_paper/step7_figure6_revisions_v2.ipynb)
